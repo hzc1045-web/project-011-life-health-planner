@@ -1,0 +1,49 @@
+# Secrets and personal data
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.pem
+*.key
+secrets/
+backups/
+runtime/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.spec
+
+# Android / Gradle
+.gradle/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+代码/android/app/build/
+代码/android/build/
+代码/android/release/
+
+# IDE and OS
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Deliverables are copied intentionally
+交付物/apk/*.apk
+交付物/windows/runtime/

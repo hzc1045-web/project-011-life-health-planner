@@ -1,0 +1,4 @@
+-keepattributes Signature,*Annotation*
+-keep class net.zetetic.database.sqlcipher.** { *; }
+-dontwarn org.bouncycastle.**
+-keep class com.project011.lifehealthplanner.data.remote.** { *; }

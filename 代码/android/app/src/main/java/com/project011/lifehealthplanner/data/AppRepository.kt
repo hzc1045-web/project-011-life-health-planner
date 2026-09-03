@@ -1,0 +1,374 @@
+package com.project011.lifehealthplanner.data
+
+import android.content.Context
+import androidx.room.withTransaction
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.project011.lifehealthplanner.backup.BackupCrypto
+import com.project011.lifehealthplanner.calendar.CalendarManager
+import com.project011.lifehealthplanner.data.local.AiConsentReceiptEntity
+import com.project011.lifehealthplanner.data.local.AppDao
+import com.project011.lifehealthplanner.data.local.AppDatabase
+import com.project011.lifehealthplanner.data.local.BackupManifestEntity
+import com.project011.lifehealthplanner.data.local.CheckInEntity
+import com.project011.lifehealthplanner.data.local.HealthRecordEntity
+import com.project011.lifehealthplanner.data.local.LifeGoalEntity
+import com.project011.lifehealthplanner.data.local.MedicationEntity
+import com.project011.lifehealthplanner.data.local.PlanEntity
+import com.project011.lifehealthplanner.data.local.PlanItemEntity
+import com.project011.lifehealthplanner.data.local.UserProfileEntity
+import com.project011.lifehealthplanner.data.remote.AiContextSnapshotDto
+import com.project011.lifehealthplanner.data.remote.AiContextMinimizer
+import com.project011.lifehealthplanner.data.remote.BackupEnvelopeDto
+import com.project011.lifehealthplanner.data.remote.BusyBlockDto
+import com.project011.lifehealthplanner.data.remote.ChatReplyDto
+import com.project011.lifehealthplanner.data.remote.ChatRequestDto
+import com.project011.lifehealthplanner.data.remote.CompanionClient
+import com.project011.lifehealthplanner.data.remote.PairCompleteRequestDto
+import com.project011.lifehealthplanner.data.remote.PlanDraftDto
+import com.project011.lifehealthplanner.data.remote.PlanItemDto
+import com.project011.lifehealthplanner.data.remote.PlanRequestDto
+import com.project011.lifehealthplanner.domain.PlanValidationResult
+import com.project011.lifehealthplanner.domain.PlanValidator
+import com.project011.lifehealthplanner.domain.FeedbackAdjuster
+import com.project011.lifehealthplanner.health.HealthConnectManager
+import com.project011.lifehealthplanner.notifications.ReminderWorker
+import com.project011.lifehealthplanner.security.SecurePreferences
+import kotlinx.coroutines.flow.Flow
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
+import java.util.UUID
+
+class AppRepository(
+    private val context: Context,
+    private val database: AppDatabase,
+    private val securePreferences: SecurePreferences,
+    private val healthConnect: HealthConnectManager,
+    private val calendar: CalendarManager,
+    private val gson: Gson = Gson(),
+) {
+    private val dao: AppDao = database.dao()
+
+    val profile: Flow<UserProfileEntity?> = dao.observeProfile()
+    val goals: Flow<List<LifeGoalEntity>> = dao.observeActiveGoals()
+    val healthRecords: Flow<List<HealthRecordEntity>> = dao.observeHealthRecords()
+    val medications: Flow<List<MedicationEntity>> = dao.observeMedications()
+    val plans: Flow<List<PlanEntity>> = dao.observePlans()
+    val planItems: Flow<List<PlanItemEntity>> = dao.observeAllPlanItems()
+
+    suspend fun saveProfile(profile: UserProfileEntity) = dao.saveProfile(profile)
+
+    suspend fun saveGoal(goal: LifeGoalEntity) = dao.saveGoal(goal)
+
+    suspend fun saveMedication(medication: MedicationEntity) = dao.saveMedication(medication)
+
+    suspend fun saveManualHealth(kind: String, value: Double, unit: String) {
+        dao.saveHealthRecords(
+            listOf(
+                HealthRecordEntity(
+                    id = "manual-${UUID.randomUUID()}",
+                    kind = kind,
+                    value = value,
+                    unit = unit,
+                    observedAt = System.currentTimeMillis(),
+                    source = "manual",
+                ),
+            ),
+        )
+    }
+
+    suspend fun syncHealthConnect(): Int {
+        val records = healthConnect.readRecent()
+        if (records.isNotEmpty()) dao.saveHealthRecords(records)
+        return records.size
+    }
+
+    fun healthPermissions() = healthConnect.permissions
+
+    fun healthPermissionContract() = healthConnect.permissionContract()
+
+    fun healthSdkStatus() = healthConnect.sdkStatus()
+
+    suspend fun pair(serverUrl: String, code: String, deviceName: String) {
+        val deviceId = securePreferences.getOrCreateDeviceId()
+        val response = CompanionClient.unauthenticated(serverUrl).pair(
+            PairCompleteRequestDto(code, deviceId, deviceName),
+        )
+        securePreferences.saveCompanion(serverUrl, response.token)
+    }
+
+    fun isPaired(): Boolean = securePreferences.credentials() != null
+
+    fun companionServer(): String = securePreferences.credentials()?.serverUrl.orEmpty()
+
+    fun clearPairing() = securePreferences.clearCompanion()
+
+    suspend fun requestAiPlan(
+        focus: String,
+        start: Instant,
+        end: Instant,
+    ): Pair<PlanDraftDto, PlanValidationResult> {
+        val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val contextSnapshot = buildAiContext(start, end)
+        recordConsent("/ai/plan", contextSnapshot)
+        val request = PlanRequestDto(
+            context = contextSnapshot,
+            periodStart = start.toString(),
+            periodEnd = end.toString(),
+            focus = focus,
+        )
+        val draft = CompanionClient.authenticated(credentials).createPlan(request)
+        val validation = PlanValidator.validate(
+            draft,
+            start,
+            end,
+            contextSnapshot.busyBlocks,
+            contextSnapshot.weeklyBudget,
+            contextSnapshot.healthConstraints,
+        )
+        return draft to validation
+    }
+
+    suspend fun requestChat(message: String, localSummary: String): ChatReplyDto {
+        val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val start = Instant.now()
+        val contextSnapshot = buildAiContext(start, start.plus(7, ChronoUnit.DAYS))
+        recordConsent("/ai/chat", contextSnapshot)
+        return CompanionClient.authenticated(credentials).chat(
+            ChatRequestDto(contextSnapshot, message, localSummary),
+        )
+    }
+
+    suspend fun createOfflinePlan(start: Instant, end: Instant): PlanDraftDto {
+        val activeGoals = dao.getGoals().filter { it.status == "active" }.sortedByDescending { it.priority }
+        val zone = ZoneId.systemDefault()
+        val firstDay = ZonedDateTime.ofInstant(start, zone).plusDays(1).withHour(7).withMinute(30)
+        val templates = buildList {
+            add(Triple("health", "轻松步行", 30L))
+            activeGoals.take(2).forEach { goal -> add(Triple(goal.domain, goal.title, 45L)) }
+            add(Triple("learning", "本周复盘", 30L))
+        }
+        val items = templates.mapIndexed { index, (domain, title, minutes) ->
+            val itemStart = firstDay.plusDays(index.toLong()).plusHours((index % 2 * 11).toLong())
+            PlanItemDto(
+                id = "offline-${UUID.randomUUID()}",
+                domain = domain,
+                title = title,
+                description = "离线基础计划，可在确认前调整。",
+                startAt = itemStart.toInstant().toString(),
+                endAt = itemStart.plusMinutes(minutes).toInstant().toString(),
+                priority = if (domain == "health") 5 else 4,
+                energy = "medium",
+                estimatedCost = 0.0,
+                goalIds = activeGoals.filter { it.title == title }.map { it.id },
+                reminderMinutes = listOf(15),
+                safetyTags = emptyList(),
+            )
+        }.filter { Instant.parse(it.endAt) <= end }
+        return PlanDraftDto(
+            title = "离线基础计划",
+            summary = "电脑或 AI 不可用时生成的本地基础安排。",
+            rationale = listOf("优先保留健康活动", "按当前高优先级目标安排短时段"),
+            riskLevel = "normal",
+            riskMessage = "",
+            items = items,
+            reviewQuestions = listOf("这些安排是否符合你本周的精力？"),
+        )
+    }
+
+    suspend fun validateDraft(
+        draft: PlanDraftDto,
+        start: Instant,
+        end: Instant,
+    ): PlanValidationResult {
+        val profile = dao.getProfile()
+        val busy = calendar.readBusyBlocks(start, end)
+        return PlanValidator.validate(
+            draft,
+            start,
+            end,
+            busy,
+            profile?.weeklyBudget,
+            profile?.let { parseStrings(it.conditionsJson) }.orEmpty(),
+        )
+    }
+
+    suspend fun confirmPlan(draft: PlanDraftDto, start: Instant, end: Instant): String {
+        val validation = validateDraft(draft, start, end)
+        require(validation.isValid) { validation.errors.joinToString("；") }
+        val planId = UUID.randomUUID().toString()
+        val plan = PlanEntity(
+            id = planId,
+            title = draft.title,
+            periodStart = start.toEpochMilli(),
+            periodEnd = end.toEpochMilli(),
+            status = "confirmed",
+            riskLevel = draft.riskLevel,
+            riskMessage = draft.riskMessage,
+            summary = draft.summary,
+            rationaleJson = gson.toJson(draft.rationale),
+            reviewQuestionsJson = gson.toJson(draft.reviewQuestions),
+        )
+        val items = draft.items.map { it.toEntity(planId) }
+        database.withTransaction {
+            dao.savePlan(plan)
+            dao.savePlanItems(items)
+        }
+        items.forEach { item ->
+            calendar.insertPlanItem(item)?.let { dao.saveCalendarLink(it) }
+            ReminderWorker.schedule(context, item)
+        }
+        return planId
+    }
+
+    suspend fun checkIn(itemId: String, status: String, difficulty: Int, energy: Int, note: String) {
+        database.withTransaction {
+            dao.updatePlanItemStatus(itemId, status)
+            dao.saveCheckIn(
+                CheckInEntity(
+                    id = UUID.randomUUID().toString(),
+                    planItemId = itemId,
+                    status = status,
+                    difficulty = difficulty.coerceIn(1, 5),
+                    energy = energy.coerceIn(1, 5),
+                    note = note,
+                ),
+            )
+        }
+    }
+
+    suspend fun uploadEncryptedBackup(password: CharArray): String {
+        val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val envelope = BackupCrypto.encrypt(gson.toJson(exportPayload()), password)
+        val receipt = CompanionClient.authenticated(credentials)
+            .uploadBackup(credentials.deviceId, envelope)
+        dao.saveBackupManifest(
+            BackupManifestEntity(
+                id = UUID.randomUUID().toString(),
+                createdAt = System.currentTimeMillis(),
+                sha256 = receipt.sha256,
+                serverReceiptId = receipt.backupId,
+                status = "uploaded",
+            ),
+        )
+        return receipt.backupId
+    }
+
+    suspend fun exportDataJson(): String = gson.toJson(
+        exportPayload().copy(
+            calendarLinks = emptyList(),
+            consentReceipts = emptyList(),
+            backupManifests = emptyList(),
+        ),
+    )
+
+    suspend fun restoreLatestBackup(password: CharArray) {
+        val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val envelope = CompanionClient.authenticated(credentials).latestBackup(credentials.deviceId)
+        val payload = gson.fromJson(
+            BackupCrypto.decrypt(envelope, password),
+            BackupPayload::class.java,
+        )
+        require(payload.version == 1) { "不支持的备份版本" }
+        database.withTransaction {
+            dao.clearCheckIns()
+            dao.clearPlanItems()
+            dao.clearPlans()
+            dao.clearGoals()
+            dao.clearMedications()
+            dao.clearHealthRecords()
+            dao.clearConstraints()
+            dao.clearRiskAlerts()
+            dao.clearCalendarLinks()
+            dao.clearConsentReceipts()
+            dao.clearBackupManifests()
+            payload.profile?.let { dao.saveProfile(it) }
+            dao.saveHealthRecords(payload.healthRecords)
+            dao.saveMedications(payload.medications)
+            dao.saveGoals(payload.goals)
+            dao.saveConstraints(payload.constraints)
+            dao.savePlans(payload.plans)
+            dao.savePlanItems(payload.planItems)
+            dao.saveCheckIns(payload.checkIns)
+            dao.saveRiskAlerts(payload.riskAlerts)
+            dao.saveConsentReceipts(payload.consentReceipts)
+            dao.saveBackupManifests(payload.backupManifests)
+        }
+    }
+
+    private suspend fun buildAiContext(start: Instant, end: Instant): AiContextSnapshotDto {
+        val profile = dao.getProfile() ?: error("请先完成个人画像")
+        val health = dao.getHealthRecords().take(100)
+        val goals = dao.getGoals()
+        val checkIns = dao.getCheckIns().take(30)
+        val feedback = listOf(FeedbackAdjuster.evaluate(checkIns).toPrompt()) + checkIns.map {
+            "${it.status}，难度 ${it.difficulty}/5，精力 ${it.energy}/5：${it.note.take(80)}"
+        }
+        return AiContextMinimizer.build(
+            profile = profile,
+            health = health,
+            goals = goals,
+            busyBlocks = calendar.readBusyBlocks(start, end),
+            recentFeedback = feedback,
+            gson = gson,
+        )
+    }
+
+    private suspend fun recordConsent(endpoint: String, contextSnapshot: AiContextSnapshotDto) {
+        val fields = buildList {
+            add("年龄段")
+            add("地区与时区")
+            if (contextSnapshot.healthConstraints.isNotEmpty()) add("健康约束")
+            if (contextSnapshot.goals.isNotEmpty()) add("目标")
+            if (contextSnapshot.metrics.isNotEmpty()) add("近期健康指标")
+            if (contextSnapshot.busyBlocks.isNotEmpty()) add("匿名忙碌时段")
+            if (contextSnapshot.recentFeedback.isNotEmpty()) add("执行反馈")
+            if (contextSnapshot.weeklyBudget != null) add("周预算")
+        }
+        dao.saveConsentReceipt(
+            AiConsentReceiptEntity(
+                id = UUID.randomUUID().toString(),
+                endpoint = endpoint,
+                fieldSummaryJson = gson.toJson(fields),
+            ),
+        )
+    }
+
+    private suspend fun exportPayload() = BackupPayload(
+        exportedAt = System.currentTimeMillis(),
+        profile = dao.getProfile(),
+        healthRecords = dao.getHealthRecords(),
+        medications = dao.getMedications(),
+        goals = dao.getGoals(),
+        constraints = dao.getConstraints(),
+        plans = dao.getPlans(),
+        planItems = dao.getPlanItems(),
+        checkIns = dao.getCheckIns(),
+        riskAlerts = dao.getRiskAlerts(),
+        calendarLinks = dao.getCalendarLinks(),
+        consentReceipts = dao.getConsentReceipts(),
+        backupManifests = dao.getBackupManifests(),
+    )
+
+    private fun parseStrings(json: String): List<String> = runCatching {
+        gson.fromJson<List<String>>(json, object : TypeToken<List<String>>() {}.type)
+    }.getOrDefault(emptyList())
+
+    private fun PlanItemDto.toEntity(planId: String) = PlanItemEntity(
+        id = id,
+        planId = planId,
+        domain = domain,
+        title = title,
+        description = description,
+        startAt = Instant.parse(startAt).toEpochMilli(),
+        endAt = Instant.parse(endAt).toEpochMilli(),
+        priority = priority,
+        energy = energy,
+        estimatedCost = estimatedCost,
+        goalIdsJson = gson.toJson(goalIds),
+        reminderMinutesJson = gson.toJson(reminderMinutes),
+        safetyTagsJson = gson.toJson(safetyTags),
+    )
+}
