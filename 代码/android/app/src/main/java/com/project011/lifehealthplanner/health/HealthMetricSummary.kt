@@ -1,5 +1,6 @@
 package com.project011.lifehealthplanner.health
 
+import com.project011.lifehealthplanner.data.IQOO_WATCH_DAILY_SOURCE
 import com.project011.lifehealthplanner.data.local.HealthRecordEntity
 import java.time.Instant
 import java.time.ZoneId
@@ -49,8 +50,10 @@ object HealthMetricSummaryPolicy {
                 null
             }
             val healthConnectRecords = todayRecords.filter { it.isHealthConnectRecord() }
+            val iqooDailyRecords = todayRecords.filter { it.source == IQOO_WATCH_DAILY_SOURCE }
             val selected = when {
                 kind == "steps" && healthConnectRecords.isNotEmpty() -> healthConnectRecords
+                iqooDailyRecords.isNotEmpty() -> iqooDailyRecords
                 kind == "steps" && deviceStep != null -> listOf(deviceStep)
                 else -> todayRecords
                     // Prefer synchronized values when both synchronized and manual
@@ -60,7 +63,10 @@ object HealthMetricSummaryPolicy {
             }
             val latest = selected.maxByOrNull(HealthRecordEntity::observedAt)
                 ?: return@mapNotNull null
-            val displayMode = if (kind == "steps" && deviceStep != null && healthConnectRecords.isEmpty()) {
+            val displayMode = if (
+                kind == "steps" && deviceStep != null &&
+                healthConnectRecords.isEmpty() && iqooDailyRecords.isEmpty()
+            ) {
                 HealthMetricDisplayMode.DEVICE_SINCE_BOOT
             } else {
                 HealthMetricDisplayMode.TODAY_TOTAL

@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.project011.lifehealthplanner.LifeHealthApplication
+import com.project011.lifehealthplanner.data.IQOO_WATCH_DAILY_SOURCE
 import com.project011.lifehealthplanner.data.ManualHealthValue
 import com.project011.lifehealthplanner.data.local.LifeGoalEntity
 import com.project011.lifehealthplanner.data.local.MedicationEntity
@@ -155,7 +156,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val values = parseManualHealthDailyReport(entries)
         repository.saveManualHealthRecords(
             values = values,
-            source = "manual:iqoo_watch_gt_e2b",
+            source = IQOO_WATCH_DAILY_SOURCE,
         )
     }
 

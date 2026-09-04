@@ -117,6 +117,34 @@ class HealthMetricSummaryPolicyTest {
         assertEquals(HealthMetricDisplayMode.DEVICE_SINCE_BOOT, steps.displayMode)
     }
 
+    @Test
+    fun iqooDailyReportTakesPrecedenceOverDeviceStepSnapshot() {
+        val result = HealthMetricSummaryPolicy.summarize(
+            records = listOf(
+                record(
+                    "steps",
+                    33336.0,
+                    "步",
+                    "2026-09-04T03:00:00Z",
+                    source = OnDeviceStepSnapshot.SOURCE,
+                ),
+                record(
+                    "steps",
+                    8342.0,
+                    "步",
+                    "2026-09-04T03:30:00Z",
+                    source = "manual:iqoo_watch_gt_e2b",
+                ),
+            ),
+            now = now,
+            zoneId = zone,
+        )
+
+        val steps = result.single { it.kind == "steps" }
+        assertEquals(8342.0, steps.value, 0.0)
+        assertEquals(HealthMetricDisplayMode.TODAY_TOTAL, steps.displayMode)
+    }
+
     private fun record(
         kind: String,
         value: Double,

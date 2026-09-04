@@ -84,7 +84,7 @@ class AppRepository(
         dao.saveHealthRecords(
             values.map { value ->
                 HealthRecordEntity(
-                    id = "manual-${UUID.randomUUID()}",
+                    id = manualHealthRecordId(source, value.kind, observedAt),
                     kind = value.kind,
                     value = value.value,
                     unit = value.unit,
@@ -550,12 +550,19 @@ class AppRepository(
 }
 
 private const val ON_DEVICE_STEP_RECORD_ID = "on-device-step-counter"
+internal const val IQOO_WATCH_DAILY_SOURCE = "manual:iqoo_watch_gt_e2b"
 
 data class ManualHealthValue(
     val kind: String,
     val value: Double,
     val unit: String,
 )
+
+private fun manualHealthRecordId(source: String, kind: String, observedAt: Long): String {
+    if (source != IQOO_WATCH_DAILY_SOURCE) return "manual-${UUID.randomUUID()}"
+    val day = Instant.ofEpochMilli(observedAt).atZone(ZoneId.systemDefault()).toLocalDate()
+    return "manual-iqoo-watch-$day-$kind"
+}
 
 data class PlanConfirmationResult(
     val planId: String,
