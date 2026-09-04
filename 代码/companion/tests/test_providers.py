@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from conftest import MemoryCredentials
+from fastapi import HTTPException
+from openai import APITimeoutError
 
 from life_companion.credential_store import CHUNK_SIZE, SERVICE_NAME, WindowsCredentialStore
 from life_companion.models import PlanRequest
@@ -46,6 +49,27 @@ class FakeChatCompletions:
         )
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=output))]
+        )
+
+
+class TimeoutChatCompletions:
+    def create(self, **kwargs):
+        raise APITimeoutError(
+            request=httpx.Request(
+                "POST", "https://api.deepseek.com/chat/completions"
+            )
+        )
+
+
+class TruncatedChatCompletions:
+    def create(self, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content='{"title":"未完成'),
+                )
+            ]
         )
 
 
@@ -95,6 +119,37 @@ def test_deepseek_uses_chat_completions_json_mode(tmp_path, plan_payload):
     call = fake_chat.calls[-1]
     assert call["model"] == "deepseek-v4-pro"
     assert call["response_format"] == {"type": "json_object"}
+    assert call["max_tokens"] == 8192
+    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
     assert call["stream"] is False
     assert "store" not in call
     assert "JSON Schema" in call["messages"][0]["content"]
+    assert "items 最多 14 个" in call["messages"][0]["content"]
+
+
+def test_ai_timeout_returns_gateway_timeout(tmp_path, plan_payload):
+    service = OpenAIService(
+        Settings(data_dir=tmp_path, active_provider="deepseek"),
+        MemoryCredentials(),
+        chat_completions_client=TimeoutChatCompletions(),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        service.create_plan(PlanRequest.model_validate(plan_payload))
+
+    assert caught.value.status_code == 504
+    assert "超时" in caught.value.detail
+
+
+def test_truncated_ai_output_returns_clear_error(tmp_path, plan_payload):
+    service = OpenAIService(
+        Settings(data_dir=tmp_path, active_provider="deepseek"),
+        MemoryCredentials(),
+        chat_completions_client=TruncatedChatCompletions(),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        service.create_plan(PlanRequest.model_validate(plan_payload))
+
+    assert caught.value.status_code == 502
+    assert "截断" in caught.value.detail

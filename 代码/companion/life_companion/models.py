@@ -153,7 +153,7 @@ class PlanDraft(BaseModel):
     rationale: list[ShortText] = Field(default_factory=list, max_length=20)
     risk_level: RiskLevel
     risk_message: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
-    items: list[PlanItem] = Field(default_factory=list, max_length=150)
+    items: list[PlanItem] = Field(default_factory=list, max_length=30)
     review_questions: list[ShortText] = Field(default_factory=list, max_length=10)
 
 

@@ -30,6 +30,7 @@ def test_plan_uses_structured_output_and_store_false(
     call = fake_responses.calls[-1]
     assert call["store"] is False
     assert call["text"]["format"]["type"] == "json_schema"
+    assert call["max_output_tokens"] == 8192
     assert "sk-test" not in str(call)
 
 

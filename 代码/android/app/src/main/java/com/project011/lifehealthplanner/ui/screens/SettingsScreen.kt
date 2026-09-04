@@ -181,7 +181,7 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                     style = MaterialTheme.typography.bodySmall,
                 )
                 HorizontalDivider()
-                Text("版本 0.1.1 · 个人健康管理与生活决策支持工具")
+                Text("版本 0.1.2 · 个人健康管理与生活决策支持工具")
                 Text("不提供诊断、处方或剂量调整。紧急情况请联系当地急救服务。")
             }
         },

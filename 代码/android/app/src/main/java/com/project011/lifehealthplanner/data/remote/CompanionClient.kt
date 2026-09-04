@@ -23,7 +23,7 @@ object CompanionClient {
         }
         val builder = OkHttpClient.Builder()
             .connectTimeout(Duration.ofSeconds(15))
-            .readTimeout(Duration.ofSeconds(60))
+            .readTimeout(Duration.ofSeconds(210))
             .writeTimeout(Duration.ofSeconds(30))
         if (credentials != null) {
             builder.addInterceptor(Interceptor { chain ->
