@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.project011.lifehealthplanner.ui.AppUiState
 import com.project011.lifehealthplanner.ui.ChatTurn
+import com.project011.lifehealthplanner.ui.aiFieldSummary
 
 @Composable
 fun AiScreen(
@@ -40,6 +41,7 @@ fun AiScreen(
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         val providerStatus = when {
             !state.paired -> "AI 离线，已有计划仍可正常使用"
+            state.companionConnectionError != null -> "电脑中转暂时离线，已有计划仍可正常使用"
             state.companionProvider.isBlank() -> "电脑中转已连接，正在读取 AI 状态"
             !state.aiConfigured -> "${state.companionProvider}：密钥未配置"
             else -> "当前 AI：${state.companionProvider}"
@@ -69,6 +71,13 @@ fun AiScreen(
                 "当前健康上下文将发送给第三方 AI小站，请仅在明确同意时继续。",
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (state.paired) {
+            Text(
+                "发送字段：${aiFieldSummary(state)}。不发送称呼、出生日期、联系方式或精确地址。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {

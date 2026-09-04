@@ -17,6 +17,9 @@ interface AppDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveProfile(profile: UserProfileEntity)
 
+    @Query("DELETE FROM user_profile")
+    suspend fun clearProfile()
+
     @Query("SELECT * FROM health_records ORDER BY observedAt DESC")
     fun observeHealthRecords(): Flow<List<HealthRecordEntity>>
 

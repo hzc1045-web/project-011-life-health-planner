@@ -12,6 +12,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -52,7 +53,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         private const val KEY_ITEM_ID = "item_id"
         private const val KEY_MESSAGE = "message"
 
-        fun schedule(context: Context, item: PlanItemEntity, reminderMinutes: Int = 15) {
+        fun schedule(context: Context, item: PlanItemEntity, reminderMinutes: Int) {
             val triggerAt = item.startAt - TimeUnit.MINUTES.toMillis(reminderMinutes.toLong())
             val delay = (triggerAt - System.currentTimeMillis()).coerceAtLeast(0)
             val data = Data.Builder()
@@ -62,9 +63,17 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             val work = OneTimeWorkRequestBuilder<ReminderWorker>()
                 .setInitialDelay(delay, TimeUnit.MILLISECONDS)
                 .setInputData(data)
-                .addTag("plan-item-${item.id}")
+                .addTag(ReminderPolicy.itemTag(item.id))
                 .build()
-            WorkManager.getInstance(context).enqueue(work)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                ReminderPolicy.workName(item.id, reminderMinutes),
+                ExistingWorkPolicy.REPLACE,
+                work,
+            )
+        }
+
+        fun cancel(context: Context, itemId: String) {
+            WorkManager.getInstance(context).cancelAllWorkByTag(ReminderPolicy.itemTag(itemId))
         }
 
         fun createChannel(context: Context) {

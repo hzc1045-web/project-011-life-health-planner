@@ -30,7 +30,8 @@ try {
 $SourceApk = Join-Path $AndroidRoot "app\build\outputs\apk\release\app-release.apk"
 $DeliverablesDir = [string][char]0x4EA4 + [char]0x4ED8 + [char]0x7269
 $DeliveryDir = Join-Path (Join-Path $ProjectRoot $DeliverablesDir) "apk"
-$DeliveryApk = Join-Path $DeliveryDir "life-health-planner-0.1.2.apk"
+$Version = "0.1.4"
+$DeliveryApk = Join-Path $DeliveryDir "life-health-planner-$Version.apk"
 Copy-Item -LiteralPath $SourceApk -Destination $DeliveryApk -Force
 $Sha256 = [System.Security.Cryptography.SHA256]::Create()
 $Stream = [System.IO.File]::OpenRead($DeliveryApk)
@@ -41,7 +42,7 @@ try {
   $Sha256.Dispose()
 }
 $HashLines = @(
-  "$Hash  life-health-planner-0.1.2.apk",
+  "$Hash  life-health-planner-$Version.apk",
   "",
   "Signing certificate SHA-256: EE2BF508C03934EC5DDEE42234C247D80BD5EBAB92A5283D116EA4846FC431AF"
 )

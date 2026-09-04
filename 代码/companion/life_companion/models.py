@@ -28,7 +28,7 @@ class LifeDomain(StrEnum):
 class PairCompleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    code: Annotated[str, StringConstraints(pattern=r"^[0-9]{6}$")]
+    code: Annotated[str, StringConstraints(pattern=r"^[0-9]{6,8}$")]
     device_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{8,100}$")]
     device_name: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)
@@ -39,6 +39,8 @@ class PairCompleteResponse(BaseModel):
     device_id: str
     token: str
     server_time: datetime
+    recovery_backup_available: bool = False
+    recovery_backup_id: str | None = None
 
 
 class PairStartResponse(BaseModel):
@@ -46,6 +48,28 @@ class PairStartResponse(BaseModel):
     code: str
     expires_at: datetime
     pairing_uri: str
+
+
+class RecoveryPairStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    server_url: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2048)
+    ]
+    source_device_id: Annotated[
+        str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{8,100}$")
+    ]
+    backup_id: Annotated[str, StringConstraints(pattern=r"^[0-9]{8}T[0-9]{12}Z$")]
+    confirmed: Literal[True]
+
+
+class RecoveryBackupSource(BaseModel):
+    source_device_id: str
+    device_name: str
+    backup_id: str
+    created_at: datetime
+    byte_count: int = Field(ge=0)
+    sha256: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 
 
 class BusyBlock(BaseModel):

@@ -10,6 +10,7 @@ import com.project011.lifehealthplanner.data.local.AiConsentReceiptEntity
 import com.project011.lifehealthplanner.data.local.AppDao
 import com.project011.lifehealthplanner.data.local.AppDatabase
 import com.project011.lifehealthplanner.data.local.BackupManifestEntity
+import com.project011.lifehealthplanner.data.local.CalendarLinkEntity
 import com.project011.lifehealthplanner.data.local.CheckInEntity
 import com.project011.lifehealthplanner.data.local.HealthRecordEntity
 import com.project011.lifehealthplanner.data.local.LifeGoalEntity
@@ -32,13 +33,18 @@ import com.project011.lifehealthplanner.data.remote.StatusDto
 import com.project011.lifehealthplanner.domain.PlanValidationResult
 import com.project011.lifehealthplanner.domain.PlanValidator
 import com.project011.lifehealthplanner.domain.FeedbackAdjuster
+import com.project011.lifehealthplanner.domain.OfflinePlanSchedule
+import com.project011.lifehealthplanner.domain.RiskDetector
+import com.project011.lifehealthplanner.domain.RiskLevel
 import com.project011.lifehealthplanner.health.HealthConnectManager
+import com.project011.lifehealthplanner.health.OnDeviceStepSnapshot
+import com.project011.lifehealthplanner.notifications.ReminderPolicy
 import com.project011.lifehealthplanner.notifications.ReminderWorker
+import com.project011.lifehealthplanner.pairing.PairingLinkParser
 import com.project011.lifehealthplanner.security.SecurePreferences
 import kotlinx.coroutines.flow.Flow
 import java.time.Instant
 import java.time.ZoneId
-import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
@@ -80,10 +86,33 @@ class AppRepository(
         )
     }
 
-    suspend fun syncHealthConnect(): Int {
-        val records = healthConnect.readRecent()
-        if (records.isNotEmpty()) dao.saveHealthRecords(records)
-        return records.size
+    suspend fun syncHealthConnect(): com.project011.lifehealthplanner.health.HealthSyncResult {
+        val result = healthConnect.readRecent()
+        if (result.records.isNotEmpty()) dao.saveHealthRecords(result.records)
+        return result
+    }
+
+    /**
+     * Reads the phone's hardware counter as a clearly labelled fallback when
+     * Health Connect (or vivo Health's data bridge) is unavailable. The
+     * counter is cumulative since the latest reboot, so one stable row is
+     * replaced on every read instead of summing snapshots together.
+     */
+    suspend fun readOnDeviceSteps(): OnDeviceStepSnapshot {
+        val snapshot = healthConnect.readOnDeviceSteps()
+        dao.saveHealthRecords(
+            listOf(
+                HealthRecordEntity(
+                    id = ON_DEVICE_STEP_RECORD_ID,
+                    kind = "steps",
+                    value = snapshot.stepsSinceBoot.toDouble(),
+                    unit = "步",
+                    observedAt = snapshot.observedAtEpochMillis,
+                    source = snapshot.source,
+                ),
+            ),
+        )
+        return snapshot
     }
 
     fun healthPermissions() = healthConnect.permissions
@@ -92,12 +121,22 @@ class AppRepository(
 
     fun healthSdkStatus() = healthConnect.sdkStatus()
 
+    suspend fun healthGrantedPermissionCount() = healthConnect.grantedPermissionCount()
+
+    fun healthOnDeviceStepCountingAvailable() = healthConnect.onDeviceStepCountingAvailable()
+
+    fun healthOnDeviceStepPermissionGranted() = healthConnect.onDeviceStepPermissionGranted()
+
+    fun openHealthConnectManagement() = healthConnect.openManagement()
+
     suspend fun pair(serverUrl: String, code: String, deviceName: String) {
+        val normalizedServerUrl = PairingLinkParser.normalizeServerUrl(serverUrl)
+            ?: error("电脑地址无效，只能连接 HTTPS 的 Tailscale（ts.net）地址")
         val deviceId = securePreferences.getOrCreateDeviceId()
-        val response = CompanionClient.unauthenticated(serverUrl).pair(
+        val response = CompanionClient.unauthenticated(normalizedServerUrl).pair(
             PairCompleteRequestDto(code, deviceId, deviceName),
         )
-        securePreferences.saveCompanion(serverUrl, response.token)
+        securePreferences.saveCompanion(normalizedServerUrl, response.token)
     }
 
     fun isPaired(): Boolean = securePreferences.credentials() != null
@@ -117,6 +156,10 @@ class AppRepository(
         end: Instant,
         expectedProviderId: String,
     ): Pair<PlanDraftDto, PlanValidationResult> {
+        val userRisk = assessUserRisk(focus)
+        require(userRisk.level != RiskLevel.URGENT) {
+            "${userRisk.message}，已停止发送健康数据并暂停普通计划"
+        }
         val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
         val client = CompanionClient.authenticated(credentials)
         val status = client.status()
@@ -141,7 +184,7 @@ class AppRepository(
             contextSnapshot.weeklyBudget,
             contextSnapshot.healthConstraints,
         )
-        return draft to validation
+        return draft to validation.withUserRisk(assessUserRisk(focus))
     }
 
     suspend fun requestChat(
@@ -167,22 +210,26 @@ class AppRepository(
 
     suspend fun createOfflinePlan(start: Instant, end: Instant): PlanDraftDto {
         val activeGoals = dao.getGoals().filter { it.status == "active" }.sortedByDescending { it.priority }
-        val zone = ZoneId.systemDefault()
-        val firstDay = ZonedDateTime.ofInstant(start, zone).plusDays(1).withHour(7).withMinute(30)
         val templates = buildList {
             add(Triple("health", "轻松步行", 30L))
             activeGoals.take(2).forEach { goal -> add(Triple(goal.domain, goal.title, 45L)) }
             add(Triple("learning", "本周复盘", 30L))
         }
-        val items = templates.mapIndexed { index, (domain, title, minutes) ->
-            val itemStart = firstDay.plusDays(index.toLong()).plusHours((index % 2 * 11).toLong())
+        val slots = OfflinePlanSchedule.create(
+            periodStart = start,
+            periodEnd = end,
+            durationsMinutes = templates.map { it.third },
+            zoneId = ZoneId.systemDefault(),
+        )
+        val items = slots.map { slot ->
+            val (domain, title, _) = templates[slot.itemIndex]
             PlanItemDto(
                 id = "offline-${UUID.randomUUID()}",
                 domain = domain,
                 title = title,
                 description = "离线基础计划，可在确认前调整。",
-                startAt = itemStart.toInstant().toString(),
-                endAt = itemStart.plusMinutes(minutes).toInstant().toString(),
+                startAt = slot.start.toString(),
+                endAt = slot.end.toString(),
                 priority = if (domain == "health") 5 else 4,
                 energy = "medium",
                 estimatedCost = 0.0,
@@ -190,7 +237,7 @@ class AppRepository(
                 reminderMinutes = listOf(15),
                 safetyTags = emptyList(),
             )
-        }.filter { Instant.parse(it.endAt) <= end }
+        }
         return PlanDraftDto(
             title = "离线基础计划",
             summary = "电脑或 AI 不可用时生成的本地基础安排。",
@@ -209,7 +256,7 @@ class AppRepository(
     ): PlanValidationResult {
         val profile = dao.getProfile()
         val busy = calendar.readBusyBlocks(start, end)
-        return PlanValidator.validate(
+        val validation = PlanValidator.validate(
             draft,
             start,
             end,
@@ -217,9 +264,10 @@ class AppRepository(
             profile?.weeklyBudget,
             profile?.let { parseStrings(it.conditionsJson) }.orEmpty(),
         )
+        return validation.withUserRisk(assessUserRisk(""))
     }
 
-    suspend fun confirmPlan(draft: PlanDraftDto, start: Instant, end: Instant): String {
+    suspend fun confirmPlan(draft: PlanDraftDto, start: Instant, end: Instant): PlanConfirmationResult {
         val validation = validateDraft(draft, start, end)
         require(validation.isValid) { validation.errors.joinToString("；") }
         val planId = UUID.randomUUID().toString()
@@ -240,11 +288,15 @@ class AppRepository(
             dao.savePlan(plan)
             dao.savePlanItems(items)
         }
-        items.forEach { item ->
-            calendar.insertPlanItem(item)?.let { dao.saveCalendarLink(it) }
-            ReminderWorker.schedule(context, item)
-        }
-        return planId
+        val integrations = reconcilePlanIntegrations(items)
+        return PlanConfirmationResult(
+            planId = planId,
+            itemCount = items.size,
+            calendarCount = integrations.calendarCount,
+            reminderCount = integrations.reminderCount,
+            calendarPendingCount = integrations.calendarPendingCount,
+            reminderFailureCount = integrations.reminderFailureCount,
+        )
     }
 
     suspend fun checkIn(itemId: String, status: String, difficulty: Int, energy: Int, note: String) {
@@ -260,6 +312,9 @@ class AppRepository(
                     note = note,
                 ),
             )
+        }
+        if (ReminderPolicy.shouldCancel(status)) {
+            ReminderWorker.cancel(context, itemId)
         }
     }
 
@@ -288,7 +343,7 @@ class AppRepository(
         ),
     )
 
-    suspend fun restoreLatestBackup(password: CharArray) {
+    suspend fun restoreLatestBackup(password: CharArray): PlanIntegrationResult {
         val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
         val envelope = CompanionClient.authenticated(credentials).latestBackup(credentials.deviceId)
         val payload = gson.fromJson(
@@ -296,6 +351,8 @@ class AppRepository(
             BackupPayload::class.java,
         )
         require(payload.version == 1) { "不支持的备份版本" }
+        val oldPlanItemIds = dao.getPlanItems().map { it.id }
+        val oldCalendarLinks = dao.getCalendarLinks()
         database.withTransaction {
             dao.clearCheckIns()
             dao.clearPlanItems()
@@ -308,8 +365,15 @@ class AppRepository(
             dao.clearCalendarLinks()
             dao.clearConsentReceipts()
             dao.clearBackupManifests()
+            // A backup without a profile represents an intentionally empty
+            // profile; clear the existing row before conditionally restoring it.
+            dao.clearProfile()
             payload.profile?.let { dao.saveProfile(it) }
-            dao.saveHealthRecords(payload.healthRecords)
+            // A hardware step snapshot is tied to the old phone's boot cycle;
+            // restoring it on a new device would present stale steps as current.
+            dao.saveHealthRecords(
+                payload.healthRecords.filterNot { it.source == OnDeviceStepSnapshot.SOURCE },
+            )
             dao.saveMedications(payload.medications)
             dao.saveGoals(payload.goals)
             dao.saveConstraints(payload.constraints)
@@ -320,6 +384,63 @@ class AppRepository(
             dao.saveConsentReceipts(payload.consentReceipts)
             dao.saveBackupManifests(payload.backupManifests)
         }
+        return reconcilePlanIntegrations(
+            items = payload.planItems,
+            oldPlanItemIds = oldPlanItemIds,
+            oldCalendarLinks = oldCalendarLinks,
+            replaceStoredLinks = true,
+        )
+    }
+
+    suspend fun rebuildPlanIntegrations(): PlanIntegrationResult {
+        val items = dao.getPlanItems()
+        return reconcilePlanIntegrations(
+            items = items,
+            oldPlanItemIds = items.map { it.id },
+            oldCalendarLinks = dao.getCalendarLinks(),
+            replaceStoredLinks = true,
+        )
+    }
+
+    private suspend fun reconcilePlanIntegrations(
+        items: List<PlanItemEntity>,
+        oldPlanItemIds: List<String> = emptyList(),
+        oldCalendarLinks: List<CalendarLinkEntity> = emptyList(),
+        replaceStoredLinks: Boolean = false,
+    ): PlanIntegrationResult {
+        val actions = RestorePlanPolicy.actions(items, System.currentTimeMillis(), gson)
+        return RestorePlanReconciler.reconcile(
+            oldPlanItemIds = oldPlanItemIds,
+            oldCalendarLinks = oldCalendarLinks,
+            actions = actions,
+            replaceStoredLinks = replaceStoredLinks,
+            effects = object : RestorePlanEffects {
+                override fun cancelReminders(itemId: String) {
+                    ReminderWorker.cancel(context, itemId)
+                }
+
+                override fun deleteCalendarEvent(link: CalendarLinkEntity): Boolean =
+                    calendar.deleteOwnedEvent(link)
+
+                override suspend fun replaceCalendarLinks(links: List<CalendarLinkEntity>) {
+                    database.withTransaction {
+                        dao.clearCalendarLinks()
+                        if (links.isNotEmpty()) dao.saveCalendarLinks(links)
+                    }
+                }
+
+                override fun insertCalendarEvent(item: PlanItemEntity): CalendarLinkEntity? =
+                    calendar.insertPlanItem(item)
+
+                override suspend fun saveCalendarLink(link: CalendarLinkEntity) {
+                    dao.saveCalendarLink(link)
+                }
+
+                override fun scheduleReminder(item: PlanItemEntity, reminderMinutes: Int) {
+                    ReminderWorker.schedule(context, item, reminderMinutes)
+                }
+            },
+        )
     }
 
     private suspend fun buildAiContext(start: Instant, end: Instant): AiContextSnapshotDto {
@@ -336,7 +457,28 @@ class AppRepository(
             goals = goals,
             busyBlocks = calendar.readBusyBlocks(start, end),
             recentFeedback = feedback,
+            medications = dao.getMedications(),
             gson = gson,
+        )
+    }
+
+    private suspend fun assessUserRisk(focus: String): com.project011.lifehealthplanner.domain.PlanningRiskAssessment {
+        val profile = dao.getProfile()
+        val profileText = profile?.let { "${it.conditionsJson}\n${it.allergiesJson}" }.orEmpty()
+        return RiskDetector.assessForPlanning(
+            focus = focus,
+            profileText = profileText,
+            healthRecords = dao.getHealthRecords(),
+        )
+    }
+
+    private fun PlanValidationResult.withUserRisk(
+        assessment: com.project011.lifehealthplanner.domain.PlanningRiskAssessment,
+    ): PlanValidationResult {
+        if (assessment.level != RiskLevel.URGENT) return this
+        return PlanValidationResult(
+            isValid = false,
+            errors = (errors + assessment.message).distinct(),
         )
     }
 
@@ -381,7 +523,7 @@ class AppRepository(
     }.getOrDefault(emptyList())
 
     private fun PlanItemDto.toEntity(planId: String) = PlanItemEntity(
-        id = id,
+        id = PlanPersistence.itemId(planId, id),
         planId = planId,
         domain = domain,
         title = title,
@@ -395,4 +537,24 @@ class AppRepository(
         reminderMinutesJson = gson.toJson(reminderMinutes),
         safetyTagsJson = gson.toJson(safetyTags),
     )
+
+}
+
+private const val ON_DEVICE_STEP_RECORD_ID = "on-device-step-counter"
+
+data class PlanConfirmationResult(
+    val planId: String,
+    val itemCount: Int,
+    val calendarCount: Int,
+    val reminderCount: Int,
+    val calendarPendingCount: Int = 0,
+    val reminderFailureCount: Int = 0,
+) {
+    fun userMessage(): String = buildString {
+        append("计划已确认，共 $itemCount 项")
+        append("；写入专属日历 $calendarCount 项")
+        append("；安排提醒 $reminderCount 个")
+        if (calendarPendingCount > 0) append("；日历待补建 $calendarPendingCount 项")
+        if (reminderFailureCount > 0) append("；提醒待重试 $reminderFailureCount 个")
+    }
 }

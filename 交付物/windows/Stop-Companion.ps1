@@ -10,7 +10,23 @@ $Process = Get-Process -Id $CompanionPid -ErrorAction SilentlyContinue
 if ($Process) {
   $ProcessInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $CompanionPid" -ErrorAction SilentlyContinue
   if ($ProcessInfo -and $ProcessInfo.CommandLine -like "*$Executable*serve*") {
-    Stop-Process -Id $Process.Id -Force
+    $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $queue = [System.Collections.Generic.Queue[int]]::new()
+    $tree = [System.Collections.Generic.List[int]]::new()
+    $queue.Enqueue([int]$CompanionPid)
+    while ($queue.Count -gt 0) {
+      $current = $queue.Dequeue()
+      if ($tree.Contains($current)) { continue }
+      $tree.Add($current)
+      foreach ($child in $allProcesses | Where-Object { [int]$_.ParentProcessId -eq $current }) {
+        if ($child.CommandLine -like "*$Executable*serve*") {
+          $queue.Enqueue([int]$child.ProcessId)
+        }
+      }
+    }
+    foreach ($processId in ($tree | Sort-Object -Descending)) {
+      Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    }
   } else {
     Write-Warning "Ignored a stale PID file that refers to another process."
   }

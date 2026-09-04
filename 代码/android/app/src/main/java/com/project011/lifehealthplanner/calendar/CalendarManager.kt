@@ -13,14 +13,16 @@ import com.project011.lifehealthplanner.data.remote.BusyBlockDto
 import java.time.Instant
 
 class CalendarManager(private val context: Context) {
-    fun hasPermission(): Boolean =
+    fun hasReadPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
-            PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
+            PackageManager.PERMISSION_GRANTED
+
+    fun hasWritePermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
             PackageManager.PERMISSION_GRANTED
 
     fun readBusyBlocks(start: Instant, end: Instant): List<BusyBlockDto> {
-        if (!hasPermission()) return emptyList()
+        if (!hasReadPermission()) return emptyList()
         val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
             ContentUris.appendId(it, start.toEpochMilli())
             ContentUris.appendId(it, end.toEpochMilli())
@@ -29,13 +31,17 @@ class CalendarManager(private val context: Context) {
             CalendarContract.Instances.BEGIN,
             CalendarContract.Instances.END,
             CalendarContract.Instances.ALL_DAY,
+            CalendarContract.Instances.AVAILABILITY,
+            CalendarContract.Instances.STATUS,
         )
         return context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
             buildList {
                 while (cursor.moveToNext()) {
                     val eventStart = cursor.getLong(0)
                     val eventEnd = cursor.getLong(1)
-                    if (eventEnd > eventStart) {
+                    val isFree = cursor.getInt(3) == CalendarContract.Events.AVAILABILITY_FREE
+                    val isCanceled = cursor.getInt(4) == CalendarContract.Events.STATUS_CANCELED
+                    if (eventEnd > eventStart && !isFree && !isCanceled) {
                         add(
                             BusyBlockDto(
                                 startAt = Instant.ofEpochMilli(eventStart).toString(),
@@ -50,7 +56,7 @@ class CalendarManager(private val context: Context) {
     }
 
     fun insertPlanItem(item: PlanItemEntity): CalendarLinkEntity? {
-        if (!hasPermission()) return null
+        if (!hasReadPermission() || !hasWritePermission()) return null
         val calendarId = findOrCreateAppCalendar() ?: return null
         val values = ContentValues().apply {
             put(CalendarContract.Events.DTSTART, item.startAt)
@@ -65,10 +71,12 @@ class CalendarManager(private val context: Context) {
     }
 
     fun deleteOwnedEvent(link: CalendarLinkEntity): Boolean {
-        if (!hasPermission()) return false
+        if (!hasWritePermission()) return false
         val uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, link.eventId)
         val where = "${CalendarContract.Events.CALENDAR_ID} = ?"
-        return context.contentResolver.delete(uri, where, arrayOf(link.calendarId.toString())) > 0
+        context.contentResolver.delete(uri, where, arrayOf(link.calendarId.toString()))
+        // A missing event is already reconciled; false is reserved for a retryable permission failure.
+        return true
     }
 
     private fun findOrCreateAppCalendar(): Long? {

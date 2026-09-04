@@ -61,6 +61,25 @@ class PlanValidatorTest {
         assertTrue(result.errors.any { "高强度" in it })
     }
 
+    @Test
+    fun relationshipsDomainMatchesServerSchema() {
+        val result = validate(draft(item(domain = "relationships")))
+        assertTrue(result.errors.toString(), result.isValid)
+    }
+
+    @Test
+    fun monthlyBudgetScalesFromWeeklyBudget() {
+        val monthEnd = Instant.parse("2026-10-01T00:00:00Z")
+        val result = PlanValidator.validate(
+            draft(item(cost = 300.0)),
+            periodStart,
+            monthEnd,
+            emptyList(),
+            weeklyBudget = 100.0,
+        )
+        assertTrue(result.errors.toString(), result.isValid)
+    }
+
     private fun validate(
         draft: PlanDraftDto,
         busyBlocks: List<BusyBlockDto> = emptyList(),
@@ -94,9 +113,10 @@ class PlanValidatorTest {
         cost: Double = 0.0,
         reminders: List<Int> = listOf(15),
         safetyTags: List<String> = emptyList(),
+        domain: String = "health",
     ) = PlanItemDto(
         id = id,
-        domain = "health",
+        domain = domain,
         title = id,
         description = "",
         startAt = start,

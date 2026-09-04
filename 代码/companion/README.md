@@ -26,3 +26,8 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8765
 ```
 
 Then run `life-health-companion pair` to create a one-time QR code.
+
+For a fresh Android installation, run `life-health-companion recover-pair`. Select the
+exact encrypted backup on the computer and type `RESTORE`; the resulting one-time QR
+code pairs the new device and makes only that selected ciphertext available to it.
+The recovery password remains on Android and is never sent to the companion.

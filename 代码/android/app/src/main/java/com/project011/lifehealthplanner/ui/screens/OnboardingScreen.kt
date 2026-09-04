@@ -66,9 +66,11 @@ fun OnboardingScreen(
         Field("称呼（仅本地）", displayName) { displayName = it }
         Field("出生日期（YYYY-MM-DD）", birthDate) { birthDate = it }
         Text("年龄段")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("18-29", "30-39", "40-49", "50-59").forEach {
-                FilterChip(selected = ageBand == it, onClick = { ageBand = it }, label = { Text(it) })
+        listOf("18-29", "30-39", "40-49", "50-59", "60-69", "70+").chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach {
+                    FilterChip(selected = ageBand == it, onClick = { ageBand = it }, label = { Text(it) })
+                }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

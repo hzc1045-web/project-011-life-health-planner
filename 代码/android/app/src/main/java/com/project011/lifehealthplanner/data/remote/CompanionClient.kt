@@ -1,6 +1,7 @@
 package com.project011.lifehealthplanner.data.remote
 
 import com.project011.lifehealthplanner.BuildConfig
+import com.project011.lifehealthplanner.pairing.PairingLinkParser
 import com.project011.lifehealthplanner.security.CompanionCredentials
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -18,9 +19,8 @@ object CompanionClient {
         build(credentials.serverUrl, credentials)
 
     private fun build(serverUrl: String, credentials: CompanionCredentials?): CompanionApi {
-        require(serverUrl.startsWith("https://") || (BuildConfig.DEBUG && serverUrl.startsWith("http://10.0.2.2"))) {
-            "电脑中转地址必须使用 HTTPS"
-        }
+        val normalizedServerUrl = PairingLinkParser.normalizeServerUrl(serverUrl)
+            ?: error("电脑中转地址无效，只能连接 HTTPS 的 Tailscale（ts.net）地址")
         val builder = OkHttpClient.Builder()
             .connectTimeout(Duration.ofSeconds(15))
             .readTimeout(Duration.ofSeconds(210))
@@ -43,7 +43,7 @@ object CompanionClient {
             })
         }
         return Retrofit.Builder()
-            .baseUrl(serverUrl.trimEnd('/') + "/")
+            .baseUrl(normalizedServerUrl + "/")
             .client(builder.build())
             .addConverterFactory(GsonConverterFactory.create())
             .build()

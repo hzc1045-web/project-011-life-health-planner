@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">人生健康规划助手</string>
-    <string name="health_permission_rationale">读取步数、睡眠、心率和体重后，应用可在本地生成更贴合实际状态的计划。数据不会自动发送给 AI。</string>
+    <string name="health_permission_rationale">读取步数、距离、活动热量、睡眠、心率、静息心率和体重后，应用可在本地生成更贴合实际状态的计划。数据不会自动发送给 AI。</string>
 </resources>

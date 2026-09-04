@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import __version__
 from .backup_store import BackupStore
@@ -21,17 +22,110 @@ from .models import (
     PairStartResponse,
     PlanDraft,
     PlanRequest,
+    RecoveryBackupSource,
+    RecoveryPairStartRequest,
     StatusResponse,
 )
 from .openai_service import ChatCompletionsClient, OpenAIService, ResponsesClient
 from .security import (
     DeviceIdentity,
     PairingStore,
+    RecoverySelection,
     ReplayProtector,
     extract_bearer,
+    normalize_server_url,
     require_loopback,
 )
 from .settings import Settings
+
+
+class _RequestTooLarge(HTTPException):
+    """Internal signal used to stop a streaming request at its configured limit."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="request too large")
+
+
+class RequestLimitMiddleware:
+    """Enforce request limits while ASGI delivers the body, including chunked bodies."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_ai_body_bytes: int,
+        max_backup_body_bytes: int,
+    ) -> None:
+        self.app = app
+        self.max_ai_body_bytes = max_ai_body_bytes
+        self.max_backup_body_bytes = max_backup_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        limit = (
+            self.max_backup_body_bytes
+            if scope.get("path", "").startswith("/backups/")
+            else self.max_ai_body_bytes
+        )
+        headers = {
+            key.lower(): value for key, value in scope.get("headers", [])
+        }
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                declared_length = int(declared)
+            except (TypeError, ValueError):
+                await self._respond(send, 400, b"invalid content-length")
+                return
+            if declared_length < 0:
+                await self._respond(send, 400, b"invalid content-length")
+                return
+            if declared_length > limit:
+                await self._respond(send, 413, b"request too large")
+                return
+
+        received = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _RequestTooLarge
+            return message
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestTooLarge:
+            # Route handlers parse the body before emitting a response. If a
+            # future streaming route has already started its response, there
+            # is no legal way to replace it with a 413 status.
+            if not response_started:
+                await self._respond(send, 413, b"request too large")
+
+    @staticmethod
+    async def _respond(send: Send, status_code: int, body: bytes) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": [
+                    (b"content-type", b"text/plain; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 def create_app(
@@ -66,23 +160,14 @@ def create_app(
     )
     app.state.settings = active_settings
     app.state.pairing = pairing
+    app.state.backups = backups
     app.state.ai = ai
 
-    @app.middleware("http")
-    async def request_limits(request: Request, call_next: Callable) -> Response:
-        content_length = request.headers.get("content-length")
-        limit = (
-            active_settings.max_backup_body_bytes
-            if request.url.path.startswith("/backups/")
-            else active_settings.max_ai_body_bytes
-        )
-        if content_length:
-            try:
-                if int(content_length) > limit:
-                    return Response(status_code=413, content="request too large")
-            except ValueError:
-                return Response(status_code=400, content="invalid content-length")
-        return await call_next(request)
+    app.add_middleware(
+        RequestLimitMiddleware,
+        max_ai_body_bytes=active_settings.max_ai_body_bytes,
+        max_backup_body_bytes=active_settings.max_backup_body_bytes,
+    )
 
     def authenticated_device(request: Request) -> DeviceIdentity:
         device_id = request.headers.get("X-Device-ID", "")
@@ -148,12 +233,16 @@ def create_app(
     @app.post("/pair/start", response_model=PairStartResponse)
     def start_pairing(request: Request, server_url: str) -> PairStartResponse:
         require_loopback(request)
-        if not server_url.startswith("https://") and not server_url.startswith("http://10.0.2.2"):
-            raise HTTPException(status_code=400, detail="配对地址必须使用 HTTPS")
+        normalized_server_url = normalize_server_url(server_url)
+        if normalized_server_url is None:
+            raise HTTPException(
+                status_code=400,
+                detail="配对地址无效，只能使用 HTTPS 的 Tailscale（ts.net）地址",
+            )
         code, expires_at = pairing.start_pairing()
-        query = urlencode({"server": server_url.rstrip("/"), "code": code})
+        query = urlencode({"server": normalized_server_url, "code": code})
         return PairStartResponse(
-            server_url=server_url.rstrip("/"),
+            server_url=normalized_server_url,
             code=code,
             expires_at=expires_at,
             pairing_uri=f"lifehealth://pair?{query}",
@@ -161,7 +250,63 @@ def create_app(
 
     @app.post("/pair/complete", response_model=PairCompleteResponse)
     def complete_pairing(payload: PairCompleteRequest) -> PairCompleteResponse:
-        return pairing.complete_pairing(payload)
+        def copy_recovery(selection: RecoverySelection, target_device_id: str) -> str:
+            return backups.copy_encrypted(
+                selection.source_device_id,
+                selection.backup_id,
+                selection.sha256,
+                target_device_id,
+            ).backup_id
+
+        return pairing.complete_pairing(payload, copy_recovery)
+
+    @app.get("/pair/recovery/sources", response_model=list[RecoveryBackupSource])
+    def list_recovery_sources(request: Request) -> list[RecoveryBackupSource]:
+        require_loopback(request)
+        names = {
+            device["device_id"]: device["name"] for device in pairing.list_devices()
+        }
+        sources: list[RecoveryBackupSource] = []
+        for device_id in backups.device_ids():
+            for receipt in backups.list(device_id):
+                sources.append(
+                    RecoveryBackupSource(
+                        source_device_id=device_id,
+                        device_name=names.get(device_id, "历史设备"),
+                        **receipt.model_dump(),
+                    )
+                )
+        return sorted(
+            sources,
+            key=lambda source: (source.created_at, source.backup_id),
+            reverse=True,
+        )
+
+    @app.post("/pair/recovery/start", response_model=PairStartResponse)
+    def start_recovery_pairing(
+        request: Request, payload: RecoveryPairStartRequest
+    ) -> PairStartResponse:
+        require_loopback(request)
+        normalized_server_url = normalize_server_url(payload.server_url)
+        if normalized_server_url is None:
+            raise HTTPException(
+                status_code=400,
+                detail="配对地址无效，只能使用 HTTPS 的 Tailscale（ts.net）地址",
+            )
+        receipt = backups.describe(payload.source_device_id, payload.backup_id)
+        selection = RecoverySelection(
+            source_device_id=payload.source_device_id,
+            backup_id=payload.backup_id,
+            sha256=receipt.sha256,
+        )
+        code, expires_at = pairing.start_pairing(selection)
+        query = urlencode({"server": normalized_server_url, "code": code})
+        return PairStartResponse(
+            server_url=normalized_server_url,
+            code=code,
+            expires_at=expires_at,
+            pairing_uri=f"lifehealth://pair?{query}",
+        )
 
     @app.get("/pair/devices")
     def list_devices(request: Request) -> list[dict[str, str]]:

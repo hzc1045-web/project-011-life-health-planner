@@ -3,6 +3,7 @@ package com.project011.lifehealthplanner.domain
 import com.project011.lifehealthplanner.data.remote.BusyBlockDto
 import com.project011.lifehealthplanner.data.remote.PlanDraftDto
 import java.time.Instant
+import java.time.Duration
 
 data class PlanValidationResult(
     val isValid: Boolean,
@@ -21,6 +22,13 @@ object PlanValidator {
         val errors = mutableListOf<String>()
         if (draft.riskLevel == "urgent") errors += "存在紧急风险，普通计划不能采用"
         if (draft.riskLevel !in setOf("normal", "caution", "urgent")) errors += "计划风险等级无效"
+        val periodDays = Duration.between(periodStart, periodEnd).toMinutes() / (24.0 * 60.0)
+        val itemLimit = when {
+            periodDays <= 1.0 -> 6
+            periodDays <= 7.0 -> 14
+            else -> 30
+        }
+        if (draft.items.size > itemLimit) errors += "计划事项超过本周期上限 $itemLimit 项"
         val parsedItems = draft.items.mapNotNull { item ->
             runCatching {
                 Triple(item, Instant.parse(item.startAt), Instant.parse(item.endAt))
@@ -55,8 +63,9 @@ object PlanValidator {
                 errors += "${first.first.title} 与 ${second.first.title} 时间重叠"
             }
         }
-        if (weeklyBudget != null && draft.items.sumOf { it.estimatedCost } > weeklyBudget) {
-            errors += "计划预计费用超过本周可用预算"
+        val periodBudget = weeklyBudget?.times(maxOf(1.0, periodDays / 7.0))
+        if (periodBudget != null && draft.items.sumOf { it.estimatedCost } > periodBudget) {
+            errors += "计划预计费用超过本周期可用预算"
         }
         if (draft.items.map { it.id }.distinct().size != draft.items.size) {
             errors += "计划项目 ID 重复"
@@ -80,7 +89,7 @@ object PlanValidator {
         return null
     }
 
-    private val VALID_DOMAINS = setOf("health", "career", "learning", "finance", "relationship", "leisure")
+    private val VALID_DOMAINS = setOf("health", "career", "learning", "finance", "relationships", "leisure")
     private val VALID_ENERGY = setOf("low", "medium", "high")
     private val HIGH_INTENSITY_BLOCKERS = listOf("避免剧烈", "近期手术", "心脏", "胸痛", "骨折", "怀孕")
     private val FASTING_BLOCKERS = listOf("糖尿病", "低血糖", "怀孕")

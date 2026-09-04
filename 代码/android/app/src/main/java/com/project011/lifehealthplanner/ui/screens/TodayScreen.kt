@@ -174,7 +174,7 @@ private fun domainLabel(value: String) = when (value) {
     "career" -> "事业"
     "learning" -> "学习"
     "finance" -> "财务"
-    "relationship" -> "关系"
+    "relationships" -> "关系"
     "leisure" -> "休闲"
     else -> value
 }

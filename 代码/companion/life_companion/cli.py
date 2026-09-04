@@ -17,8 +17,8 @@ import uvicorn
 
 from .app import create_app
 from .credential_store import WindowsCredentialStore
-from .models import PairStartResponse
-from .security import PairingStore
+from .models import PairStartResponse, RecoveryBackupSource
+from .security import PairingStore, normalize_server_url
 from .settings import PROVIDERS, Settings
 
 
@@ -83,6 +83,11 @@ def cmd_pair(args: argparse.Namespace) -> int:
     settings = Settings.load()
     settings.ensure_directories()
     server_url = args.server_url or _tailscale_server_url()
+    server_url = normalize_server_url(server_url)
+    if server_url is None:
+        raise RuntimeError(
+            "Invalid pairing server URL; use an HTTPS Tailscale (*.ts.net) address"
+        )
     start_url = (
         f"http://127.0.0.1:{settings.port}/pair/start?"
         + urlencode({"server_url": server_url})
@@ -93,13 +98,82 @@ def cmd_pair(args: argparse.Namespace) -> int:
             response = PairStartResponse.model_validate_json(result.read())
     except (OSError, URLError) as error:
         raise RuntimeError("Start the companion before creating a pairing code") from error
-    output = settings.data_dir / "pairing-qr.png"
+    _show_pairing_qr(settings, response, "pairing-qr.png")
+    return 0
+
+
+def _show_pairing_qr(
+    settings: Settings, response: PairStartResponse, filename: str
+) -> None:
+    output = settings.data_dir / filename
     qrcode.make(response.pairing_uri).save(output)
     print(f"Server: {response.server_url}")
     print(f"Code: {response.code}")
     print(f"Expires: {response.expires_at.isoformat()}")
     print(f"QR: {output}")
     webbrowser.open(output.as_uri())
+
+
+def cmd_recover_pair(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    settings.ensure_directories()
+    server_url = args.server_url or _tailscale_server_url()
+    server_url = normalize_server_url(server_url)
+    if server_url is None:
+        raise RuntimeError(
+            "Invalid pairing server URL; use an HTTPS Tailscale (*.ts.net) address"
+        )
+    base_url = f"http://127.0.0.1:{settings.port}"
+    try:
+        with urlopen(f"{base_url}/pair/recovery/sources", timeout=5) as result:  # noqa: S310
+            sources_payload = json.loads(result.read())
+        sources = [RecoveryBackupSource.model_validate(item) for item in sources_payload]
+    except (OSError, URLError, ValueError) as error:
+        raise RuntimeError("Start the companion before selecting a recovery backup") from error
+    if not sources:
+        raise RuntimeError("No encrypted backups are available for recovery")
+
+    print("Available encrypted backups:")
+    for index, source in enumerate(sources, start=1):
+        safe_name = "".join(
+            character if character.isprintable() else "?"
+            for character in source.device_name
+        )
+        print(
+            f"{index}. {safe_name} | {source.created_at.isoformat()} | "
+            f"{source.byte_count} bytes | SHA-256 {source.sha256[:12]}..."
+        )
+    try:
+        selected_index = int(input("Select backup number: ").strip()) - 1
+        selected = sources[selected_index]
+    except (ValueError, IndexError) as error:
+        raise RuntimeError("Invalid backup selection") from error
+    if selected_index < 0:
+        raise RuntimeError("Invalid backup selection")
+    confirmation = input("Type RESTORE to confirm copying this encrypted backup: ").strip()
+    if confirmation != "RESTORE":
+        raise RuntimeError("Recovery pairing cancelled")
+
+    payload = json.dumps(
+        {
+            "server_url": server_url,
+            "source_device_id": selected.source_device_id,
+            "backup_id": selected.backup_id,
+            "confirmed": True,
+        }
+    ).encode("utf-8")
+    start_request = Request(  # noqa: S310
+        f"{base_url}/pair/recovery/start",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(start_request, timeout=5) as result:  # noqa: S310
+            response = PairStartResponse.model_validate_json(result.read())
+    except (OSError, URLError, ValueError) as error:
+        raise RuntimeError("Unable to start recovery pairing") from error
+    _show_pairing_qr(settings, response, "recovery-pairing-qr.png")
     return 0
 
 
@@ -129,12 +203,13 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(required=True)
     commands = {
         "pair": cmd_pair,
+        "recover-pair": cmd_recover_pair,
         "serve": cmd_serve,
         "status": cmd_status,
     }
     for name, function in commands.items():
         command = subcommands.add_parser(name)
-        if name == "pair":
+        if name in {"pair", "recover-pair"}:
             command.add_argument("--server-url")
         command.set_defaults(handler=function)
     set_key = subcommands.add_parser("set-key")

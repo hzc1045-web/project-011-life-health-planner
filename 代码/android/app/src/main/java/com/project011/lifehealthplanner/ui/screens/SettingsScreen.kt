@@ -58,9 +58,23 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
         }.isSuccess
         viewModel.exportHandled(success)
     }
-    val calendarLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    val calendarLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        viewModel.onCalendarPermissionResult(
+            result[Manifest.permission.READ_CALENDAR] == true &&
+                result[Manifest.permission.WRITE_CALENDAR] == true,
+        )
+    }
     val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val healthLauncher = rememberLauncherForActivityResult(viewModel.healthPermissionContract()) { }
+    val healthPermissionContract = remember { viewModel.healthPermissionContract() }
+    val healthLauncher = rememberLauncherForActivityResult(healthPermissionContract) {
+        viewModel.syncHealthConnect()
+    }
+    val deviceStepPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        viewModel.onDeviceStepPermissionResult(granted)
+    }
+    val healthConnectStatus = viewModel.healthConnectUiStatus()
     LaunchedEffect(state.exportJson) {
         if (state.exportJson != null) exportLauncher.launch("life-health-planner-export.json")
     }
@@ -83,12 +97,52 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                     OutlinedButton(onClick = {
                         calendarLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
                     }) { Text("日历") }
-                    OutlinedButton(onClick = { healthLauncher.launch(viewModel.healthPermissions()) }) { Text("健康数据") }
+                    OutlinedButton(
+                        onClick = { healthLauncher.launch(viewModel.healthPermissions()) },
+                        enabled = healthConnectStatus.isAvailable,
+                    ) { Text("健康数据") }
                     if (Build.VERSION.SDK_INT >= 33) {
                         OutlinedButton(onClick = { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
                             Text("通知")
                         }
                     }
+                }
+                Text(healthConnectStatus.statusMessage(), style = MaterialTheme.typography.bodySmall)
+                healthConnectStatus.stepGuidance()?.let { guidance ->
+                    Text(guidance, style = MaterialTheme.typography.bodySmall)
+                }
+                healthConnectStatus.noDataGuidance()?.let { guidance ->
+                    Text(guidance, style = MaterialTheme.typography.bodySmall)
+                }
+                if (healthConnectStatus.isAvailable) {
+                    OutlinedButton(
+                        onClick = viewModel::openHealthConnectManagement,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("管理 Health Connect") }
+                }
+                if (healthConnectStatus.onDeviceStepCountingAvailable) {
+                    OutlinedButton(
+                        onClick = {
+                            if (healthConnectStatus.onDeviceStepPermissionGranted) {
+                                viewModel.readOnDeviceSteps()
+                            } else {
+                                deviceStepPermissionLauncher.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (healthConnectStatus.onDeviceStepPermissionGranted) {
+                                "读取本机步数"
+                            } else {
+                                "授权并读取本机步数"
+                            },
+                        )
+                    }
+                    Text(
+                        "本机计步仅保留自最近一次开机以来的累计值，不会补回 vivo/iQOO 健康历史数据。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 OutlinedButton(
                     onClick = viewModel::prepareExport,
@@ -132,7 +186,7 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                     )
                     Button(
                         onClick = { viewModel.pair(serverUrl, code) },
-                        enabled = serverUrl.startsWith("https://") && code.length >= 6,
+                        enabled = serverUrl.startsWith("https://") && code.length in 6..8,
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Default.Link, contentDescription = null)
@@ -181,7 +235,7 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                     style = MaterialTheme.typography.bodySmall,
                 )
                 HorizontalDivider()
-                Text("版本 0.1.2 · 个人健康管理与生活决策支持工具")
+                Text("版本 0.1.4 · 个人健康管理与生活决策支持工具")
                 Text("不提供诊断、处方或剂量调整。紧急情况请联系当地急救服务。")
             }
         },

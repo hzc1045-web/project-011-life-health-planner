@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import com.project011.lifehealthplanner.data.remote.PlanItemDto
 import com.project011.lifehealthplanner.ui.AppUiState
 import com.project011.lifehealthplanner.ui.AppViewModel
+import com.project011.lifehealthplanner.ui.aiFieldSummary
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -154,13 +155,4 @@ private fun DraftItem(item: PlanItemDto) {
             Text("预计费用 ¥${"%.2f".format(item.estimatedCost)} · 精力 ${item.energy}")
         }
     }
-}
-
-private fun aiFieldSummary(state: AppUiState): String {
-    val fields = mutableListOf("年龄段", "地区与时区", "匿名忙碌时段")
-    if (state.profile?.conditionsJson != "[]") fields += "健康约束"
-    if (state.goals.isNotEmpty()) fields += "目标"
-    if (state.healthRecords.isNotEmpty()) fields += "近期健康指标"
-    if (state.profile?.weeklyBudget != null) fields += "周预算"
-    return fields.joinToString("、")
 }

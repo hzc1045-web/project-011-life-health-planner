@@ -11,10 +11,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,43 +29,55 @@ import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.project011.lifehealthplanner.pairing.PairingLinkParser
+import com.project011.lifehealthplanner.pairing.PairingLinkResult
+import com.project011.lifehealthplanner.pairing.PairingRequest
 import com.project011.lifehealthplanner.ui.AppViewModel
 import com.project011.lifehealthplanner.ui.LifeHealthApp
 import com.project011.lifehealthplanner.ui.screens.OnboardingScreen
 import com.project011.lifehealthplanner.ui.theme.LifeHealthTheme
 
 class MainActivity : FragmentActivity() {
-    private var pairingUri by mutableStateOf<String?>(null)
+    private var pendingPairing by mutableStateOf<PairingRequest?>(null)
+    private var pairingLinkError by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pairingUri = intent?.dataString
+        handlePairingIntent(intent)
         setContent {
             LifeHealthTheme {
                 val viewModel: AppViewModel = viewModel()
                 val state by viewModel.state.collectAsStateWithLifecycle()
-                LaunchedEffect(pairingUri) {
-                    pairingUri?.let { uriText ->
-                        val uri = android.net.Uri.parse(uriText)
-                        val server = uri.getQueryParameter("server")
-                        val code = uri.getQueryParameter("code")
-                        if (uri.scheme == "lifehealth" && uri.host == "pair" && server != null && code != null) {
-                            viewModel.pair(server, code)
-                            pairingUri = null
-                        }
+                val content: @Composable () -> Unit = {
+                    if (state.profile?.onboardingComplete != true) {
+                        OnboardingScreen(
+                            loading = state.loading,
+                            message = state.message,
+                            onSave = viewModel::saveOnboarding,
+                        )
+                    } else {
+                        LifeHealthApp(viewModel, state)
                     }
+                    PairingLinkDialogs(
+                        request = pendingPairing,
+                        error = pairingLinkError,
+                        currentlyPaired = state.paired,
+                        currentServer = state.companionServer,
+                        onConfirm = { request ->
+                            pendingPairing = null
+                            viewModel.pair(request.serverUrl, request.code)
+                        },
+                        onDismissRequest = { pendingPairing = null },
+                        onDismissError = { pairingLinkError = null },
+                    )
                 }
-                when {
-                    state.profile?.onboardingComplete != true -> OnboardingScreen(
-                        loading = state.loading,
-                        message = state.message,
-                        onSave = viewModel::saveOnboarding,
-                    )
-                    state.profile?.appLockEnabled == true -> BiometricGate(
-                        activity = this,
-                        content = { LifeHealthApp(viewModel, state) },
-                    )
-                    else -> LifeHealthApp(viewModel, state)
+                if (
+                    state.profile?.onboardingComplete == true &&
+                    state.profile?.appLockEnabled == true
+                ) {
+                    BiometricGate(activity = this, content = content)
+                } else {
+                    content()
                 }
             }
         }
@@ -72,7 +86,72 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        pairingUri = intent.dataString
+        handlePairingIntent(intent)
+    }
+
+    private fun handlePairingIntent(intent: Intent?) {
+        val rawLink = intent?.dataString ?: return
+        intent.data = null
+        when (val result = PairingLinkParser.parse(rawLink)) {
+            is PairingLinkResult.Valid -> {
+                pendingPairing = result.request
+                pairingLinkError = null
+            }
+            is PairingLinkResult.Invalid -> {
+                pendingPairing = null
+                pairingLinkError = result.message
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairingLinkDialogs(
+    request: PairingRequest?,
+    error: String?,
+    currentlyPaired: Boolean,
+    currentServer: String,
+    onConfirm: (PairingRequest) -> Unit,
+    onDismissRequest: () -> Unit,
+    onDismissError: () -> Unit,
+) {
+    if (request != null) {
+        AlertDialog(
+            onDismissRequest = onDismissRequest,
+            title = { Text("确认电脑配对") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("待配对电脑地址")
+                    Text(
+                        request.serverUrl,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (currentlyPaired) {
+                        Text(
+                            "当前已配对 ${currentServer.ifBlank { "另一台电脑" }}。确认后将替换现有配对。",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    Text("请只确认你刚刚在可信电脑上生成的配对二维码。")
+                }
+            },
+            confirmButton = {
+                Button(onClick = { onConfirm(request) }) { Text("确认配对") }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissRequest) { Text("取消") }
+            },
+        )
+    }
+    if (error != null) {
+        AlertDialog(
+            onDismissRequest = onDismissError,
+            title = { Text("无法使用配对链接") },
+            text = { Text(error) },
+            confirmButton = {
+                TextButton(onClick = onDismissError) { Text("知道了") }
+            },
+        )
     }
 }
 
