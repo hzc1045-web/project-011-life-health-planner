@@ -72,17 +72,26 @@ class AppRepository(
     suspend fun saveMedication(medication: MedicationEntity) = dao.saveMedication(medication)
 
     suspend fun saveManualHealth(kind: String, value: Double, unit: String) {
+        saveManualHealthRecords(listOf(ManualHealthValue(kind, value, unit)))
+    }
+
+    suspend fun saveManualHealthRecords(
+        values: List<ManualHealthValue>,
+        source: String = "manual",
+    ) {
+        require(values.isNotEmpty()) { "至少需要一项健康记录" }
+        val observedAt = System.currentTimeMillis()
         dao.saveHealthRecords(
-            listOf(
+            values.map { value ->
                 HealthRecordEntity(
                     id = "manual-${UUID.randomUUID()}",
-                    kind = kind,
-                    value = value,
-                    unit = unit,
-                    observedAt = System.currentTimeMillis(),
-                    source = "manual",
-                ),
-            ),
+                    kind = value.kind,
+                    value = value.value,
+                    unit = value.unit,
+                    observedAt = observedAt,
+                    source = source,
+                )
+            },
         )
     }
 
@@ -541,6 +550,12 @@ class AppRepository(
 }
 
 private const val ON_DEVICE_STEP_RECORD_ID = "on-device-step-counter"
+
+data class ManualHealthValue(
+    val kind: String,
+    val value: Double,
+    val unit: String,
+)
 
 data class PlanConfirmationResult(
     val planId: String,

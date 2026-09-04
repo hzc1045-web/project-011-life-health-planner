@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.project011.lifehealthplanner.LifeHealthApplication
+import com.project011.lifehealthplanner.data.ManualHealthValue
 import com.project011.lifehealthplanner.data.local.LifeGoalEntity
 import com.project011.lifehealthplanner.data.local.MedicationEntity
 import com.project011.lifehealthplanner.data.local.UserProfileEntity
@@ -148,6 +149,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun addHealthRecord(kind: String, value: String, unit: String) = launchAction("健康记录已保存") {
         val parsed = value.toDoubleOrNull() ?: error("请输入有效数值")
         repository.saveManualHealth(kind, parsed, unit)
+    }
+
+    fun addHealthDailyReport(entries: Map<String, String>) = launchAction("手环日报已保存") {
+        val values = parseManualHealthDailyReport(entries)
+        repository.saveManualHealthRecords(
+            values = values,
+            source = "manual:iqoo_watch_gt_e2b",
+        )
     }
 
     fun syncHealthConnect() = launchAction(null) {
@@ -446,6 +455,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         .map(String::trim)
         .filter(String::isNotBlank)
 
+    private fun healthUnit(kind: String): String = manualHealthUnit(kind)
+
     private data class PersonalData(
         val profile: UserProfileEntity?,
         val goals: List<LifeGoalEntity>,
@@ -457,4 +468,45 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val plans: List<com.project011.lifehealthplanner.data.local.PlanEntity>,
         val planItems: List<com.project011.lifehealthplanner.data.local.PlanItemEntity>,
     )
+}
+
+/**
+ * Converts the optional daily report fields into records while rejecting any
+ * non-empty value that cannot be parsed. Blank fields are intentionally
+ * allowed so users can enter only the metrics available in vivo Health.
+ */
+internal fun parseManualHealthDailyReport(entries: Map<String, String>): List<ManualHealthValue> {
+    val values = entries.mapNotNull { (kind, rawValue) ->
+        val normalized = rawValue.trim()
+        if (normalized.isBlank()) return@mapNotNull null
+        val value = normalized.toDoubleOrNull()
+            ?: error("手环数据“${manualHealthLabel(kind)}”必须是有效数值")
+        ManualHealthValue(kind, value, manualHealthUnit(kind))
+    }
+    require(values.isNotEmpty()) { "请至少填写一项手环数据" }
+    require(values.all { it.value.isFinite() && it.value >= 0.0 }) {
+        "手环数据必须是非负数值"
+    }
+    return values
+}
+
+private fun manualHealthUnit(kind: String): String = when (kind) {
+    "weight" -> "kg"
+    "sleep" -> "小时"
+    "heart_rate", "resting_heart_rate" -> "bpm"
+    "steps" -> "步"
+    "distance" -> "km"
+    "active_calories" -> "kcal"
+    else -> ""
+}
+
+private fun manualHealthLabel(kind: String): String = when (kind) {
+    "weight" -> "体重"
+    "sleep" -> "睡眠"
+    "heart_rate" -> "心率"
+    "resting_heart_rate" -> "静息心率"
+    "steps" -> "步数"
+    "distance" -> "距离"
+    "active_calories" -> "活动热量"
+    else -> kind
 }

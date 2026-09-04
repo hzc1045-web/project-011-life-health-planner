@@ -57,6 +57,13 @@ fun HealthScreen(state: AppUiState, viewModel: AppViewModel, padding: PaddingVal
     var ingredient by remember { mutableStateOf("") }
     var dose by remember { mutableStateOf("") }
     var schedule by remember { mutableStateOf("") }
+    var dailyWeight by remember { mutableStateOf("") }
+    var dailySleep by remember { mutableStateOf("") }
+    var dailyHeartRate by remember { mutableStateOf("") }
+    var dailyRestingHeartRate by remember { mutableStateOf("") }
+    var dailySteps by remember { mutableStateOf("") }
+    var dailyDistance by remember { mutableStateOf("") }
+    var dailyCalories by remember { mutableStateOf("") }
     val healthPermissionContract = remember { viewModel.healthPermissionContract() }
     val permissionsLauncher = rememberLauncherForActivityResult(healthPermissionContract) {
         viewModel.syncHealthConnect()
@@ -127,6 +134,94 @@ fun HealthScreen(state: AppUiState, viewModel: AppViewModel, padding: PaddingVal
                     },
                     Modifier.padding(start = 6.dp),
                 )
+            }
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.small,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("iQOO WATCH GT E2B 手环日报", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "从 vivo 健康抄录当天数据后一次保存；数据仅保存在本机，不会伪装成 Health Connect 来源。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                listOf(
+                    listOf("体重" to dailyWeight, "睡眠" to dailySleep),
+                    listOf("心率" to dailyHeartRate, "静息心率" to dailyRestingHeartRate),
+                    listOf("步数" to dailySteps, "距离" to dailyDistance),
+                    listOf("活动热量" to dailyCalories),
+                ).forEach { row ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        row.forEach { (label, currentValue) ->
+                            val kindForField = kindForDailyLabel(label)
+                            OutlinedTextField(
+                                value = currentValue,
+                                onValueChange = { updated ->
+                                    val sanitized = numericOnly(updated)
+                                    when (kindForField) {
+                                        "weight" -> dailyWeight = sanitized
+                                        "sleep" -> dailySleep = sanitized
+                                        "heart_rate" -> dailyHeartRate = sanitized
+                                        "resting_heart_rate" -> dailyRestingHeartRate = sanitized
+                                        "steps" -> dailySteps = sanitized
+                                        "distance" -> dailyDistance = sanitized
+                                        "active_calories" -> dailyCalories = sanitized
+                                    }
+                                },
+                                label = { Text("$label (${unitFor(kindForField)})") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (row.size == 1) {
+                            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+                Button(
+                    onClick = {
+                        viewModel.addHealthDailyReport(
+                            mapOf(
+                                "weight" to dailyWeight,
+                                "sleep" to dailySleep,
+                                "heart_rate" to dailyHeartRate,
+                                "resting_heart_rate" to dailyRestingHeartRate,
+                                "steps" to dailySteps,
+                                "distance" to dailyDistance,
+                                "active_calories" to dailyCalories,
+                            ),
+                        )
+                        dailyWeight = ""
+                        dailySleep = ""
+                        dailyHeartRate = ""
+                        dailyRestingHeartRate = ""
+                        dailySteps = ""
+                        dailyDistance = ""
+                        dailyCalories = ""
+                    },
+                    enabled = listOf(
+                        dailyWeight,
+                        dailySleep,
+                        dailyHeartRate,
+                        dailyRestingHeartRate,
+                        dailySteps,
+                        dailyDistance,
+                        dailyCalories,
+                    ).any { it.toDoubleOrNull() != null },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Text("保存手环日报", Modifier.padding(start = 6.dp))
+                }
             }
         }
         listOf(
@@ -236,6 +331,24 @@ private fun unitFor(kind: String) = when (kind) {
     "distance" -> "km"
     "active_calories" -> "kcal"
     else -> ""
+}
+
+private fun kindForDailyLabel(label: String) = when (label) {
+    "体重" -> "weight"
+    "睡眠" -> "sleep"
+    "心率" -> "heart_rate"
+    "静息心率" -> "resting_heart_rate"
+    "步数" -> "steps"
+    "距离" -> "distance"
+    "活动热量" -> "active_calories"
+    else -> error("未知手环日报字段")
+}
+
+private fun numericOnly(value: String): String {
+    val filtered = value.filter { it.isDigit() || it == '.' }
+    val dotIndex = filtered.indexOf('.')
+    if (dotIndex < 0) return filtered
+    return filtered.take(dotIndex + 1) + filtered.drop(dotIndex + 1).replace(".", "")
 }
 
 private fun healthKindLabel(kind: String) = when (kind) {
