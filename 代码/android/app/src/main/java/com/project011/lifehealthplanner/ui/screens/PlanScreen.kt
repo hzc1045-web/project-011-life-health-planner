@@ -76,13 +76,23 @@ fun PlanScreen(state: AppUiState, viewModel: AppViewModel, padding: PaddingValue
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("本次发送字段", style = MaterialTheme.typography.titleSmall)
                     Text(aiFieldSummary(state), style = MaterialTheme.typography.bodyMedium)
+                    if (state.companionProvider.isNotBlank()) {
+                        Text("数据接收方：${state.companionProvider}", style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("不发送称呼、出生日期、联系方式或精确地址。", style = MaterialTheme.typography.bodySmall)
+                    if (state.companionProviderThirdParty) {
+                        Text(
+                            "当前为第三方服务，请确认接受其数据处理规则后再生成。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         }
         Button(
             onClick = { viewModel.generatePlan(focus, useAi, days) },
-            enabled = !state.loading && (!useAi || state.paired),
+            enabled = !state.loading && (!useAi || (state.paired && state.aiConfigured)),
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(if (useAi) Icons.Default.AutoAwesome else Icons.Default.OfflineBolt, contentDescription = null)
@@ -90,6 +100,8 @@ fun PlanScreen(state: AppUiState, viewModel: AppViewModel, padding: PaddingValue
         }
         if (useAi && !state.paired) {
             Text("AI 离线：请先在设置中配对电脑。", color = MaterialTheme.colorScheme.error)
+        } else if (useAi && !state.aiConfigured) {
+            Text("AI 离线：请在电脑端配置当前提供商密钥。", color = MaterialTheme.colorScheme.error)
         }
         state.draft?.let { draft ->
             HorizontalDivider()

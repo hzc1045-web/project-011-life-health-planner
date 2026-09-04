@@ -89,7 +89,12 @@ fun LifeHealthApp(viewModel: AppViewModel, state: AppUiState) {
                 Destination.PLAN -> PlanScreen(state, viewModel, padding)
                 Destination.GOALS -> GoalsScreen(state.goals, viewModel::addGoal, padding)
                 Destination.HEALTH -> HealthScreen(state, viewModel, padding)
-                Destination.AI -> AiScreen(state, viewModel::sendChat, padding)
+                Destination.AI -> AiScreen(
+                    state,
+                    viewModel::sendChat,
+                    viewModel::refreshCompanionStatus,
+                    padding,
+                )
             }
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center))
         }

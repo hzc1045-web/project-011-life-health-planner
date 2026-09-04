@@ -23,6 +23,10 @@ data class AppUiState(
     val exportJson: String? = null,
     val paired: Boolean = false,
     val companionServer: String = "",
+    val companionProviderId: String = "",
+    val companionProvider: String = "",
+    val companionProviderThirdParty: Boolean = false,
+    val aiConfigured: Boolean = false,
     val loading: Boolean = false,
     val message: String? = null,
 )

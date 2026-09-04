@@ -23,7 +23,7 @@ from .models import (
     PlanRequest,
     StatusResponse,
 )
-from .openai_service import OpenAIService, ResponsesClient
+from .openai_service import ChatCompletionsClient, OpenAIService, ResponsesClient
 from .security import (
     DeviceIdentity,
     PairingStore,
@@ -38,6 +38,7 @@ def create_app(
     settings: Settings | None = None,
     credential_store: CredentialStore | None = None,
     responses_client: ResponsesClient | None = None,
+    chat_completions_client: ChatCompletionsClient | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.load()
     active_settings.ensure_directories()
@@ -45,7 +46,12 @@ def create_app(
     pairing = PairingStore(active_settings)
     replay = ReplayProtector(active_settings)
     backups = BackupStore(active_settings.data_dir / "backups")
-    ai = OpenAIService(active_settings, credentials, responses_client)
+    ai = OpenAIService(
+        active_settings,
+        credentials,
+        responses_client,
+        chat_completions_client,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -87,11 +93,24 @@ def create_app(
         replay.verify(device_id, timestamp, nonce)
         return identity
 
+    def authenticated_ai_device(request: Request) -> DeviceIdentity:
+        identity = authenticated_device(request)
+        expected_provider = request.headers.get("X-AI-Provider", "")
+        if expected_provider != active_settings.active_provider:
+            raise HTTPException(
+                status_code=409,
+                detail="AI 提供商已变化，请先刷新状态并重新确认数据接收方",
+            )
+        return identity
+
     @app.get("/status", response_model=StatusResponse)
     def get_status() -> StatusResponse:
         return StatusResponse(
             version=__version__,
             ai_configured=ai.is_configured(),
+            active_provider=active_settings.active_provider,
+            provider_display_name=active_settings.provider.display_name,
+            provider_is_third_party=active_settings.provider.third_party,
             planning_model=active_settings.planning_model,
             economy_model=active_settings.economy_model,
         )
@@ -107,6 +126,11 @@ def create_app(
             or "<li>尚未配对设备</li>"
         )
         configured = "已配置" if ai.is_configured() else "未配置"
+        provider_notice = (
+            "<p style='color:#b3261e'>当前为第三方服务，健康上下文会发送给该提供商。</p>"
+            if active_settings.provider.third_party
+            else ""
+        )
         return (
             "<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
             "<title>人生健康规划助手 - 电脑中转</title>"
@@ -114,7 +138,9 @@ def create_app(
             "padding:0 20px;color:#202124}"
             "h1{font-size:28px}code{background:#f1f3f4;padding:3px 6px;border-radius:4px}</style>"
             "<h1>人生健康规划助手</h1>"
-            f"<p>服务版本：<code>{__version__}</code></p><p>OpenAI 密钥：{configured}</p>"
+            f"<p>服务版本：<code>{__version__}</code></p>"
+            f"<p>当前 AI：<strong>{active_settings.provider.display_name}</strong></p>"
+            f"<p>当前密钥：{configured}</p>{provider_notice}"
             f"<h2>已配对设备</h2><ul>{rows}</ul>"
             "<p>使用桌面的 <code>Pair-Device.cmd</code> 生成一次性二维码。</p></html>"
         )
@@ -150,14 +176,14 @@ def create_app(
     @app.post("/ai/plan", response_model=PlanDraft)
     def create_plan(
         payload: PlanRequest,
-        _: DeviceIdentity = Depends(authenticated_device),
+        _: DeviceIdentity = Depends(authenticated_ai_device),
     ) -> PlanDraft:
         return ai.create_plan(payload)
 
     @app.post("/ai/chat", response_model=ChatReply)
     def chat(
         payload: ChatRequest,
-        _: DeviceIdentity = Depends(authenticated_device),
+        _: DeviceIdentity = Depends(authenticated_ai_device),
     ) -> ChatReply:
         return ai.chat(payload)
 

@@ -53,6 +53,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppUiState())
 
+    init {
+        if (repository.isPaired()) {
+            viewModelScope.launch { runCatching { updateCompanionStatus() } }
+        }
+    }
+
     fun clearMessage() = transient.update { it.copy(message = null) }
 
     fun saveOnboarding(
@@ -142,7 +148,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val start = Instant.now()
         val end = start.plus(days.coerceIn(1, 31).toLong(), ChronoUnit.DAYS)
         val draftAndValidation = if (useAi) {
-            repository.requestAiPlan(focus, start, end)
+            repository.requestAiPlan(focus, start, end, state.value.companionProviderId)
         } else {
             val draft = repository.createOfflinePlan(start, end)
             draft to repository.validateDraft(draft, start, end)
@@ -184,18 +190,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun pair(serverUrl: String, code: String) = launchAction("电脑配对成功") {
         repository.pair(serverUrl.trim(), code.trim(), android.os.Build.MODEL)
+        updateCompanionStatus()
+    }
+
+    fun refreshCompanionStatus() = launchAction(null) {
+        updateCompanionStatus()
+        transient.update { it.copy(message = "AI 提供商状态已刷新") }
     }
 
     fun clearPairing() {
         repository.clearPairing()
-        transient.update { it.copy(message = "手机端配对信息已清除") }
+        transient.update {
+            it.copy(
+                companionProviderId = "",
+                companionProvider = "",
+                companionProviderThirdParty = false,
+                aiConfigured = false,
+                message = "手机端配对信息已清除",
+            )
+        }
     }
 
     fun sendChat(message: String) = launchAction(null) {
         require(message.isNotBlank()) { "请输入内容" }
         transient.update { it.copy(chat = it.chat + ChatTurn(true, message.trim())) }
         val summary = state.value.chat.takeLast(6).joinToString("\n") { it.text.take(300) }
-        val reply = repository.requestChat(message.trim(), summary)
+        val reply = repository.requestChat(
+            message.trim(),
+            summary,
+            state.value.companionProviderId,
+        )
         transient.update {
             it.copy(chat = it.chat + ChatTurn(false, reply.reply, reply), message = null)
         }
@@ -216,6 +240,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun healthConnectAvailable() =
         repository.healthSdkStatus() == androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE
+
+    private suspend fun updateCompanionStatus() {
+        val status = repository.companionStatus()
+        transient.update {
+            it.copy(
+                companionProviderId = status.activeProvider,
+                companionProvider = status.providerDisplayName,
+                companionProviderThirdParty = status.providerIsThirdParty,
+                aiConfigured = status.aiConfigured,
+            )
+        }
+    }
 
     private fun launchAction(success: String?, action: suspend () -> Unit) {
         viewModelScope.launch {

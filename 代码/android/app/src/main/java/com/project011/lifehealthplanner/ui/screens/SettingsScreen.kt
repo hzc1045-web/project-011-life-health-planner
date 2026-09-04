@@ -98,6 +98,23 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                 Text("电脑配对", style = MaterialTheme.typography.titleMedium)
                 if (state.paired) {
                     Text(state.companionServer, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        if (state.companionProvider.isBlank()) {
+                            "当前 AI：状态未刷新"
+                        } else {
+                            "当前 AI：${state.companionProvider}"
+                        },
+                    )
+                    if (state.companionProviderThirdParty) {
+                        Text(
+                            "第三方服务会接收本次发送的最小化健康上下文。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(onClick = viewModel::refreshCompanionStatus) {
+                        Text("刷新 AI 状态")
+                    }
                     OutlinedButton(onClick = viewModel::clearPairing) { Text("清除手机端配对") }
                 } else {
                     OutlinedTextField(
@@ -164,7 +181,7 @@ fun SettingsScreen(state: AppUiState, viewModel: AppViewModel, onDismiss: () -> 
                     style = MaterialTheme.typography.bodySmall,
                 )
                 HorizontalDivider()
-                Text("版本 0.1.0 · 个人健康管理与生活决策支持工具")
+                Text("版本 0.1.1 · 个人健康管理与生活决策支持工具")
                 Text("不提供诊断、处方或剂量调整。紧急情况请联系当地急救服务。")
             }
         },

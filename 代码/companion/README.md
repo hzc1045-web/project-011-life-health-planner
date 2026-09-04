@@ -1,17 +1,20 @@
 # Windows Companion
 
-The companion keeps the OpenAI API key on Windows and accepts authenticated requests from the paired Android app over Tailscale.
+The companion keeps separate DeepSeek official and AI Xiaozhan API keys on Windows and accepts authenticated requests from the paired Android app over Tailscale. DeepSeek is the default; switching to the third-party AI Xiaozhan route requires explicit acknowledgement.
 
 ## Local development
 
 ```powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\life-health-companion.exe set-key
+.\.venv\Scripts\life-health-companion.exe set-key --provider deepseek
+.\.venv\Scripts\life-health-companion.exe set-key --provider subkkai
+.\.venv\Scripts\life-health-companion.exe use-provider deepseek
+.\.venv\Scripts\life-health-companion.exe use-provider subkkai --acknowledge-third-party
 .\.venv\Scripts\life-health-companion.exe serve
 ```
 
-The API key is stored through Windows Credential Manager by `keyring`. It is never read from an environment file.
+Each provider key is split into safe-size chunks and stored through Windows Credential Manager by `keyring`. Keys are never read from an environment file. Provider choice is manual and there is no automatic cross-provider fallback.
 
 ## Tailscale
 

@@ -10,6 +10,8 @@ def test_status_is_public_and_does_not_expose_key(client):
     response = client.get("/status")
     assert response.status_code == 200
     assert response.json()["ai_configured"] is True
+    assert response.json()["active_provider"] == "subkkai"
+    assert response.json()["provider_is_third_party"] is True
     assert "api_key" not in response.text
 
 
@@ -36,6 +38,18 @@ def test_replay_nonce_is_rejected(client, paired, plan_payload):
     fixed = headers("nonce-replay-123456789")
     assert client.post("/ai/plan", json=plan_payload, headers=fixed).status_code == 200
     assert client.post("/ai/plan", json=plan_payload, headers=fixed).status_code == 409
+
+
+def test_stale_ai_provider_is_rejected_before_model_call(
+    client, paired, plan_payload, fake_responses
+):
+    _, headers = paired
+    stale = headers("nonce-stale-provider-1234")
+    stale["X-AI-Provider"] = "deepseek"
+    response = client.post("/ai/plan", json=plan_payload, headers=stale)
+    assert response.status_code == 409
+    assert "AI 提供商已变化" in response.json()["detail"]
+    assert not fake_responses.calls
 
 
 def test_urgent_health_text_blocks_openai(client, paired, plan_payload, fake_responses):

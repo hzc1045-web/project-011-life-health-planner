@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set "ADB=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
-set "APK=%~dp0life-health-planner-0.1.0.apk"
+set "APK=%~dp0life-health-planner-0.1.1.apk"
 if not exist "%ADB%" (
   echo ADB was not found. Install Android SDK Platform Tools first.
   pause

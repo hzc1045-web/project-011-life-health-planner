@@ -5,6 +5,9 @@ import com.google.gson.annotations.SerializedName
 data class StatusDto(
     val version: String,
     @SerializedName("ai_configured") val aiConfigured: Boolean,
+    @SerializedName("active_provider") val activeProvider: String,
+    @SerializedName("provider_display_name") val providerDisplayName: String,
+    @SerializedName("provider_is_third_party") val providerIsThirdParty: Boolean,
     @SerializedName("planning_model") val planningModel: String,
     @SerializedName("economy_model") val economyModel: String,
     @SerializedName("server_time") val serverTime: String,

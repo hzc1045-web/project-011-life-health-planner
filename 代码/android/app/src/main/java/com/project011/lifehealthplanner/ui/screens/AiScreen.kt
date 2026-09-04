@@ -11,8 +11,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -28,13 +30,45 @@ import com.project011.lifehealthplanner.ui.AppUiState
 import com.project011.lifehealthplanner.ui.ChatTurn
 
 @Composable
-fun AiScreen(state: AppUiState, onSend: (String) -> Unit, padding: PaddingValues) {
+fun AiScreen(
+    state: AppUiState,
+    onSend: (String) -> Unit,
+    onRefresh: () -> Unit,
+    padding: PaddingValues,
+) {
     var message by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+        val providerStatus = when {
+            !state.paired -> "AI 离线，已有计划仍可正常使用"
+            state.companionProvider.isBlank() -> "电脑中转已连接，正在读取 AI 状态"
+            !state.aiConfigured -> "${state.companionProvider}：密钥未配置"
+            else -> "当前 AI：${state.companionProvider}"
+        }
+        Surface(
+            color = if (state.companionProviderThirdParty) {
+                MaterialTheme.colorScheme.errorContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+            shape = MaterialTheme.shapes.small,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(providerStatus, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
+                if (state.paired) {
+                    IconButton(onClick = onRefresh) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新 AI 状态")
+                    }
+                }
+            }
+        }
+        if (state.companionProviderThirdParty) {
             Text(
-                if (state.paired) "电脑中转已连接" else "AI 离线，已有计划仍可正常使用",
-                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                "当前健康上下文将发送给第三方 AI小站，请仅在明确同意时继续。",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
             )
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -56,7 +90,7 @@ fun AiScreen(state: AppUiState, onSend: (String) -> Unit, padding: PaddingValues
                     onSend(message)
                     message = ""
                 },
-                enabled = state.paired && message.isNotBlank() && !state.loading,
+                enabled = state.paired && state.aiConfigured && message.isNotBlank() && !state.loading,
             ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送") }
         }
     }

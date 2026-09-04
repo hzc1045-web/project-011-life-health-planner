@@ -28,6 +28,7 @@ import com.project011.lifehealthplanner.data.remote.PairCompleteRequestDto
 import com.project011.lifehealthplanner.data.remote.PlanDraftDto
 import com.project011.lifehealthplanner.data.remote.PlanItemDto
 import com.project011.lifehealthplanner.data.remote.PlanRequestDto
+import com.project011.lifehealthplanner.data.remote.StatusDto
 import com.project011.lifehealthplanner.domain.PlanValidationResult
 import com.project011.lifehealthplanner.domain.PlanValidator
 import com.project011.lifehealthplanner.domain.FeedbackAdjuster
@@ -103,23 +104,35 @@ class AppRepository(
 
     fun companionServer(): String = securePreferences.credentials()?.serverUrl.orEmpty()
 
+    suspend fun companionStatus(): StatusDto {
+        val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        return CompanionClient.authenticated(credentials).status()
+    }
+
     fun clearPairing() = securePreferences.clearCompanion()
 
     suspend fun requestAiPlan(
         focus: String,
         start: Instant,
         end: Instant,
+        expectedProviderId: String,
     ): Pair<PlanDraftDto, PlanValidationResult> {
         val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val client = CompanionClient.authenticated(credentials)
+        val status = client.status()
+        require(expectedProviderId.isNotBlank() && status.activeProvider == expectedProviderId) {
+            "AI 提供商已变化，请刷新状态并重新确认数据接收方"
+        }
+        require(status.aiConfigured) { "${status.providerDisplayName} API 密钥尚未配置" }
         val contextSnapshot = buildAiContext(start, end)
-        recordConsent("/ai/plan", contextSnapshot)
+        recordConsent("/ai/plan@${status.activeProvider}", contextSnapshot)
         val request = PlanRequestDto(
             context = contextSnapshot,
             periodStart = start.toString(),
             periodEnd = end.toString(),
             focus = focus,
         )
-        val draft = CompanionClient.authenticated(credentials).createPlan(request)
+        val draft = client.createPlan(expectedProviderId, request)
         val validation = PlanValidator.validate(
             draft,
             start,
@@ -131,12 +144,23 @@ class AppRepository(
         return draft to validation
     }
 
-    suspend fun requestChat(message: String, localSummary: String): ChatReplyDto {
+    suspend fun requestChat(
+        message: String,
+        localSummary: String,
+        expectedProviderId: String,
+    ): ChatReplyDto {
         val credentials = securePreferences.credentials() ?: error("尚未配对电脑")
+        val client = CompanionClient.authenticated(credentials)
+        val status = client.status()
+        require(expectedProviderId.isNotBlank() && status.activeProvider == expectedProviderId) {
+            "AI 提供商已变化，请刷新状态并重新确认数据接收方"
+        }
+        require(status.aiConfigured) { "${status.providerDisplayName} API 密钥尚未配置" }
         val start = Instant.now()
         val contextSnapshot = buildAiContext(start, start.plus(7, ChronoUnit.DAYS))
-        recordConsent("/ai/chat", contextSnapshot)
-        return CompanionClient.authenticated(credentials).chat(
+        recordConsent("/ai/chat@${status.activeProvider}", contextSnapshot)
+        return client.chat(
+            expectedProviderId,
             ChatRequestDto(contextSnapshot, message, localSummary),
         )
     }

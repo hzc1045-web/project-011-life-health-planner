@@ -13,16 +13,16 @@ from life_companion.settings import Settings
 
 class MemoryCredentials:
     def __init__(self, value: str | None = "test-api-key-not-a-secret") -> None:
-        self.value = value
+        self.values = {"deepseek": value, "subkkai": value}
 
-    def get_api_key(self) -> str | None:
-        return self.value
+    def get_api_key(self, provider_id: str) -> str | None:
+        return self.values.get(provider_id)
 
-    def set_api_key(self, value: str) -> None:
-        self.value = value
+    def set_api_key(self, provider_id: str, value: str) -> None:
+        self.values[provider_id] = value
 
-    def clear_api_key(self) -> None:
-        self.value = None
+    def clear_api_key(self, provider_id: str) -> None:
+        self.values[provider_id] = None
 
 
 class FakeResponse:
@@ -53,7 +53,11 @@ class FakeResponses:
 
 @pytest.fixture
 def settings(tmp_path):
-    return Settings(data_dir=tmp_path)
+    return Settings(
+        data_dir=tmp_path,
+        active_provider="subkkai",
+        third_party_acknowledged=True,
+    )
 
 
 @pytest.fixture
@@ -84,6 +88,7 @@ def paired(client, app):
             "X-Device-ID": response.device_id,
             "X-Request-Timestamp": str(int(datetime.now(UTC).timestamp())),
             "X-Request-Nonce": nonce,
+            "X-AI-Provider": "subkkai",
         }
 
     return response, headers

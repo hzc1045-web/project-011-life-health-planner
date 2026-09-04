@@ -204,6 +204,9 @@ class BackupReceipt(BaseModel):
 class StatusResponse(BaseModel):
     version: str
     ai_configured: bool
+    active_provider: str
+    provider_display_name: str
+    provider_is_third_party: bool
     planning_model: str
     economy_model: str
     server_time: datetime = Field(default_factory=lambda: datetime.now(UTC))

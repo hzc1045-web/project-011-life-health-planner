@@ -9,10 +9,23 @@ if (-not (Test-Path $Executable)) { throw "Run Setup-Companion.cmd first." }
 New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
 if (Test-Path $PidFile) {
   $ExistingPid = Get-Content $PidFile -ErrorAction SilentlyContinue
-  if ($ExistingPid -and (Get-Process -Id $ExistingPid -ErrorAction SilentlyContinue)) {
-    Write-Host "Companion is already running."
-    exit 0
+  $ExistingProcess = if ($ExistingPid) { Get-Process -Id $ExistingPid -ErrorAction SilentlyContinue }
+  if ($ExistingProcess) {
+    $ExistingInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $ExistingPid" -ErrorAction SilentlyContinue
+    $IsCompanion = $ExistingInfo -and $ExistingInfo.CommandLine -like "*$Executable*serve*"
+    if ($IsCompanion) {
+      try {
+        Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:8765/status" -TimeoutSec 3 | Out-Null
+        Write-Host "Companion is already running."
+        exit 0
+      } catch {
+        Stop-Process -Id $ExistingPid -Force
+      }
+    } else {
+      Write-Warning "Ignored a stale PID file that refers to another process."
+    }
   }
+  Remove-Item -LiteralPath $PidFile -Force
 }
 $Process = Start-Process -FilePath $Executable -ArgumentList "serve" -WorkingDirectory $CompanionRoot -WindowStyle Hidden -PassThru
 $Process.Id | Set-Content -Path $PidFile -Encoding ASCII

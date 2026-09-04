@@ -19,7 +19,7 @@ from .app import create_app
 from .credential_store import WindowsCredentialStore
 from .models import PairStartResponse
 from .security import PairingStore
-from .settings import Settings
+from .settings import PROVIDERS, Settings
 
 
 def _tailscale_executable() -> str:
@@ -54,16 +54,28 @@ def _tailscale_server_url(port: int = 8443) -> str:
     raise RuntimeError("Tailscale is not connected or MagicDNS is unavailable")
 
 
-def cmd_set_key(_: argparse.Namespace) -> int:
-    key = getpass.getpass("OpenAI API key (input hidden): ")
-    WindowsCredentialStore().set_api_key(key)
-    print("API key saved in Windows Credential Manager.")
+def cmd_set_key(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    provider_id = args.provider or settings.active_provider
+    key = getpass.getpass("AI API key (input hidden): ")
+    WindowsCredentialStore().set_api_key(provider_id, key)
+    print(f"{PROVIDERS[provider_id].display_name} API key saved in Windows Credential Manager.")
     return 0
 
 
-def cmd_clear_key(_: argparse.Namespace) -> int:
-    WindowsCredentialStore().clear_api_key()
-    print("API key removed from Windows Credential Manager.")
+def cmd_clear_key(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    provider_id = args.provider or settings.active_provider
+    WindowsCredentialStore().clear_api_key(provider_id)
+    print(f"{PROVIDERS[provider_id].display_name} API key removed from Windows Credential Manager.")
+    return 0
+
+
+def cmd_use_provider(args: argparse.Namespace) -> int:
+    settings = Settings.load()
+    settings.activate_provider(args.provider, args.acknowledge_third_party)
+    print(f"Active AI provider: {PROVIDERS[args.provider].display_name}")
+    print("Restart the companion to apply this change.")
     return 0
 
 
@@ -101,7 +113,11 @@ def cmd_status(_: argparse.Namespace) -> int:
     settings = Settings.load()
     credentials = WindowsCredentialStore()
     payload = settings.public_dict() | {
-        "api_key_configured": bool(credentials.get_api_key()),
+        "api_key_configured": bool(credentials.get_api_key(settings.active_provider)),
+        "configured_providers": {
+            provider_id: bool(credentials.get_api_key(provider_id))
+            for provider_id in PROVIDERS
+        },
         "devices": PairingStore(settings).list_devices(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -112,8 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="life-health-companion")
     subcommands = parser.add_subparsers(required=True)
     commands = {
-        "set-key": cmd_set_key,
-        "clear-key": cmd_clear_key,
         "pair": cmd_pair,
         "serve": cmd_serve,
         "status": cmd_status,
@@ -123,6 +137,16 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "pair":
             command.add_argument("--server-url")
         command.set_defaults(handler=function)
+    set_key = subcommands.add_parser("set-key")
+    set_key.add_argument("--provider", choices=PROVIDERS)
+    set_key.set_defaults(handler=cmd_set_key)
+    clear_key = subcommands.add_parser("clear-key")
+    clear_key.add_argument("--provider", choices=PROVIDERS)
+    clear_key.set_defaults(handler=cmd_clear_key)
+    use_provider = subcommands.add_parser("use-provider")
+    use_provider.add_argument("provider", choices=PROVIDERS)
+    use_provider.add_argument("--acknowledge-third-party", action="store_true")
+    use_provider.set_defaults(handler=cmd_use_provider)
     return parser
 
 

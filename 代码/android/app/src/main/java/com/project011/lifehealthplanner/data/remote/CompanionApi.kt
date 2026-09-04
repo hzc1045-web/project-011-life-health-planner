@@ -3,6 +3,7 @@ package com.project011.lifehealthplanner.data.remote
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
@@ -15,10 +16,16 @@ interface CompanionApi {
     suspend fun pair(@Body request: PairCompleteRequestDto): PairCompleteResponseDto
 
     @POST("ai/plan")
-    suspend fun createPlan(@Body request: PlanRequestDto): PlanDraftDto
+    suspend fun createPlan(
+        @Header("X-AI-Provider") providerId: String,
+        @Body request: PlanRequestDto,
+    ): PlanDraftDto
 
     @POST("ai/chat")
-    suspend fun chat(@Body request: ChatRequestDto): ChatReplyDto
+    suspend fun chat(
+        @Header("X-AI-Provider") providerId: String,
+        @Body request: ChatRequestDto,
+    ): ChatReplyDto
 
     @PUT("backups/{deviceId}")
     suspend fun uploadBackup(
