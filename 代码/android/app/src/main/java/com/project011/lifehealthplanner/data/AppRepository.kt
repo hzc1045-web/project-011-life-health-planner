@@ -81,18 +81,32 @@ class AppRepository(
     ) {
         require(values.isNotEmpty()) { "至少需要一项健康记录" }
         val observedAt = System.currentTimeMillis()
-        dao.saveHealthRecords(
-            values.map { value ->
-                HealthRecordEntity(
-                    id = manualHealthRecordId(source, value.kind, observedAt),
-                    kind = value.kind,
-                    value = value.value,
-                    unit = value.unit,
-                    observedAt = observedAt,
-                    source = source,
-                )
-            },
-        )
+        val records = values.map { value ->
+            HealthRecordEntity(
+                id = manualHealthRecordId(source, value.kind, observedAt),
+                kind = value.kind,
+                value = value.value,
+                unit = value.unit,
+                observedAt = observedAt,
+                source = source,
+            )
+        }
+        if (source != IQOO_WATCH_DAILY_SOURCE) {
+            dao.saveHealthRecords(records)
+            return
+        }
+        val zone = ZoneId.systemDefault()
+        val localDate = Instant.ofEpochMilli(observedAt).atZone(zone).toLocalDate()
+        val dayStart = localDate.atStartOfDay(zone).toInstant().toEpochMilli()
+        val dayEnd = localDate.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        database.withTransaction {
+            values.map(ManualHealthValue::kind).distinct().forEach { kind ->
+                // Remove records created by pre-upsert builds before inserting
+                // the deterministic same-day replacement.
+                dao.deleteHealthRecordsForDay(source, kind, dayStart, dayEnd)
+            }
+            dao.saveHealthRecords(records)
+        }
     }
 
     suspend fun syncHealthConnect(): com.project011.lifehealthplanner.health.HealthSyncResult {

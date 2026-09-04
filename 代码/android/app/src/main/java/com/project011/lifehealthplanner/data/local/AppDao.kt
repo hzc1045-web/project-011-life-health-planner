@@ -29,6 +29,18 @@ interface AppDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveHealthRecords(records: List<HealthRecordEntity>)
 
+    @Query(
+        "DELETE FROM health_records " +
+            "WHERE source = :source AND kind = :kind " +
+            "AND observedAt >= :dayStart AND observedAt < :dayEnd",
+    )
+    suspend fun deleteHealthRecordsForDay(
+        source: String,
+        kind: String,
+        dayStart: Long,
+        dayEnd: Long,
+    )
+
     @Query("SELECT * FROM medications ORDER BY createdAt DESC")
     fun observeMedications(): Flow<List<MedicationEntity>>
 
